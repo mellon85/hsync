@@ -70,35 +70,43 @@ dht_hash dst dstl in1 in1l in2 in2l in3 in3l = do
 runDHT :: (Maybe HostAddress) -> (Maybe HostAddress6) -> Int -> FunPtr Callback -> String -> IO Int
 runDHT v4 v6 port callback path = do
     fd4 <- makeSocket v4 port
-    fd6 <- makeSocket6 v6 port
-    -- TODO check if fd6 is failed, then close fd4 too
-    ret <- bracket (mallocArray size) free (\id -> do
-                -- fill ID with random data
-                rand <- Prelude.take size <$> randoms <$> getStdGen
-                copyIn id $ zip [0..size] rand
-                withCString path (\cp -> runDHT_ fd4 fd6 portC id callback cp))
-    ret <- fromIntegral ret
-    -- TODO check ret and act on it
-    return ret
+    withPersistSocket fd4 (\fd4 -> do
+        fd6 <- makeSocket6 v6 port
+        withPersistSocket fd6 (\fd6 -> do
+                ret <- bracket (mallocArray size) free (\id -> do
+                    -- fill ID with random data
+                    rand <- Prelude.take size <$> randoms <$> getStdGen
+                    copyIn id $ zip [0..size] rand
+                    withCString path (\cp -> runDHT_ fd4 fd6 portC id callback cp)
+                    )
+                return $ fromIntegral ret
+            )
+        )
     where
         portC = CShort $! fromIntegral port
         size = 20
 
         copyIn :: (Storable a) => Ptr a -> [(Int, a)] -> IO (Ptr a)
-        copyIn ptr vals = let copy = \p (off,val) -> pokeElemOff p off val >> return p
+        copyIn ptr vals = let
+            copy = \p (off,val) -> pokeElemOff p off val >> return p
                 in foldM copy ptr vals
 
-makeSocket :: Maybe HostAddress -> Int -> IO CInt
-makeSocket Nothing port = return $ CInt . fromIntegral $ -1
+makeSocket :: Maybe HostAddress -> Int -> IO (Maybe Socket)
+makeSocket Nothing port = return Nothing
 makeSocket (Just host) port = do
     sock <- socket AF_INET Stream defaultProtocol
     bind sock $ SockAddrInet (fromIntegral port) host
-    return $ fdSocket sock
+    return $ Just sock
 
-makeSocket6 :: Maybe HostAddress6 -> Int -> IO CInt
-makeSocket6 Nothing port = return $ CInt . fromIntegral $ -1
+makeSocket6 :: Maybe HostAddress6 -> Int -> IO (Maybe Socket)
+makeSocket6 Nothing port = return Nothing
 makeSocket6 (Just host) port = do
     sock <- socket AF_INET6 Stream defaultProtocol
     bind sock $ SockAddrInet6 (fromIntegral port) (fromIntegral 0) host (fromIntegral 0)
-    return $ fdSocket sock
+    return $ Just sock
 
+withPersistSocket :: Maybe Socket -> (CInt -> IO a) -> IO a
+withPersistSocket sock f = (f $ maybe (CInt (0-1)) fdSocket sock) `onException`
+    (maybe (return ()) close sock)
+
+-- TODO add generateDHTID function and make it public
