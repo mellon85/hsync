@@ -258,7 +258,7 @@ int ffi_run_dht(
     time_t estimated_time = 1;
     v4counter = 0;
     v6counter = 0;
-    port = _port;
+    port = htons(_port);
 
     /* Setup randomness for the dht */
     srand(time(NULL) ^ getpid() ^ (int)pthread_self());
