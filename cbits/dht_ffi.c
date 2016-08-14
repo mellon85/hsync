@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <assert.h>
 
 #include <unistd.h>
 #include <pthread.h>
@@ -215,7 +216,7 @@ static void close_fd(int *fd)
     {
         if (*fd > 0)
             close(*fd);
-        *fd = -1
+        *fd = -1;
     }
 }
 
@@ -334,21 +335,9 @@ void ffi_add_node(const struct sockaddr* restrict node, int len)
 
 int dht_random_bytes(void *buf, size_t size)
 {
-    int *buf4 = (int*)buf;
-    const int len4 = size % 4;
-    for( int i = 0; i < len4; ++i )
-    {
-        buf4[i] = rand();
-    }
-
-    const int offset = len4*4;
-    const int len1 = size - offset;
     char *buf1 = (char*)buf;
-    for( int i = 0; i < len1; ++i )
-    {
-        buf1[i+offset] = rand();
-    }
-
+    for(size_t i = 0; i < size; ++i)
+        buf1[i] = rand();
     return 0;
 }
 
