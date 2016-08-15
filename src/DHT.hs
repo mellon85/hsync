@@ -1,6 +1,6 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 
-module Lib
+module DHT
     ( someFunc,
       runDHT,
       stopDHT

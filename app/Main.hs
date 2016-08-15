@@ -1,13 +1,8 @@
 module Main where
 
-import Lib
+import qualified DHT as D
 
 main :: IO ()
 main = do
-    {- v <- test_ffi 0
-	print v 
-	v <- test_ffi 0
-	print v
-    -}
-    stopDHT
-    print "moo"
+    D.stopDHT
+    putStrLn "moo"
