@@ -1,0 +1,3 @@
+[submodule "dht"]
+	path = cbits/dht
+	url = https://github.com/jech/dht.git

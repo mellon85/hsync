@@ -1,4 +1,4 @@
-#include "dht.h"
+#include "dht/dht.h"
 
 #ifdef __cplusplus
 extern "C" {

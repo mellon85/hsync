@@ -19,7 +19,7 @@
 
 #include "dht_ffi.h"
 
-#include "dht.c"
+#include "dht/dht.c"
 
 #ifdef __cplusplus
 extern "C" {
