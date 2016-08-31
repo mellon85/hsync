@@ -1,8 +1,8 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 
 module DHT
-    ( someFunc,
-      runDHT,
+    ( runDHT,
+      generateID,
       stopDHT
     ) where
 
@@ -26,9 +26,6 @@ import Network.Socket
 -- Hash
 import Crypto.Hash
 import Data.ByteArray
-
-someFunc :: IO ()
-someFunc = putStrLn "someFunc"
 
 type Callback = CString -> CInt -> CString -> CString -> CUInt -> IO ()
 
