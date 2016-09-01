@@ -38,6 +38,8 @@ import Data.Typeable (Typeable)
 import Control.Monad
 import Data.Maybe (isJust)
 
+import Data.Bits (shiftR, shiftL, (.&.))
+
 -- Network
 import Network.Socket
 
@@ -63,10 +65,10 @@ dhtIDSize = 20
 -- | Pointer representing the DHTID address
 type DHTID = Ptr CChar
 
-foreign import ccall unsafe "ffi_run_dht" runDHT_ :: CInt -> CInt -> CShort ->
+foreign import ccall safe "ffi_run_dht" runDHT_ :: CInt -> CInt -> CShort ->
     DHTID -> FunPtr FFICallback -> CString -> IO CInt
-foreign import ccall unsafe "ffi_stop_dht" stopDHT_ :: IO ()
-foreign import ccall unsafe "ffi_search" ffi_search :: DHTID -> IO CInt
+foreign import ccall safe "ffi_stop_dht" stopDHT_ :: IO ()
+foreign import ccall safe "ffi_search" ffi_search :: DHTID -> IO CInt
 foreign import ccall safe "ffi_get_nodes" getNodes :: Ptr CInt -> Ptr CInt -> IO ()
 foreign import ccall safe "ffi_add_node" addNode :: Ptr () -> CShort -> IO ()
 
@@ -84,7 +86,7 @@ data SearchResult = End
                   | IP6 HostAddress6 Int
 
 data DHT_ = DHT_ {
-        searches :: MVar (Map.Map DHTID (TChan SearchResult)),
+        searches :: MVar (Map.Map DHTID (TChan SearchResult, Int)),
         callback :: FunPtr FFICallback,
         ipv4 :: Bool,
         ipv6 :: Bool
@@ -164,6 +166,7 @@ cleanupDHT dht =
 stopDHT :: DHT_ -> IO()
 stopDHT dht = do
     stopDHT_
+    modifyMVar_ (searches dht) (\_ -> pure $ Map.empty) -- zero the map of searches
     cleanupDHT dht
 
 -- |Utility functions to create a socket IPv4
@@ -206,8 +209,14 @@ search (DHT dht) dst = do
     tchan <- newTChanIO
     ret <- ffi_search dst
     case fromIntegral ret of
-        1 -> modifyMVar_ (searches dht) (return . Map.insert dst tchan) >> return tchan
+        1 -> do
+            modifyMVar_ (searches dht) $ pure . Map.insert dst (tchan, 0)
+            return tchan
         _ -> throw . Fail $ fromIntegral ret
+
+-- |Utility function to get a count for the protocols the searches have to end
+countProtocols :: DHT_ -> Int
+countProtocols d = fromEnum (ipv4 d) + fromEnum (ipv6 d)
 
 ffiCallback :: DHT_ -> FFICallback
 ffiCallback dht _ event hash addr len = do
@@ -215,7 +224,10 @@ ffiCallback dht _ event hash addr len = do
     maybe (return ()) (\chan ->
         case event of
             0 -> return () -- no event
-            1 -> -- ipv4
+            1 -> do -- ipv4 found
+                -- addr is the ipv4 address and port in network byte order
+                ipv4addr <- peek $ castPtr addr :: IO HostAddress
+                port <- peekByteOff  addr (sizeOf ipv4addr) :: IO CShort
                 return ()
             2 -> -- ipv6
                 return ()
@@ -230,6 +242,14 @@ ffiCallback dht _ event hash addr len = do
             _ -> return () -- Unknown event, ignore and hope for the best
         ) mchan
 
+invertEndian :: CShort -> CShort
+invertEndian s = let
+    low = s .&. 0x00FF
+    high = s .&. 0xFF00
+    in
+        high `shiftL` 16 + low `shiftR` 16
+
 -- |Wrapper to pass the callback function to the C layer
 foreign import ccall "wrapper"
     mkCallback :: FFICallback -> IO (FunPtr FFICallback)
+
