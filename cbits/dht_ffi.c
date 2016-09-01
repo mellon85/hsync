@@ -247,6 +247,12 @@ int ffi_run_dht(
     dht_callback callback,
     const char* restrict bootstrap_path /* bootstrap node data */)
 {
+    if (fd4 > 0 || fd6 > 0)
+    {
+        // Already initialized!
+        return -2;
+    }
+
     assert(_fd4 > 0 || _fd6 > 0);
     assert(id != NULL && strlen(id) == 20);
     assert(callback != NULL);
