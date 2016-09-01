@@ -1,4 +1,4 @@
-{-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE ForeignFunctionInterface, TemplateHaskell #-}
 
 {-|
 Module      : DHT
@@ -17,11 +17,15 @@ module DHT
       withDHT,
       stopDHT,
       DHTID,
-      DHT
+      DHT,
+      runTests
     ) where
+
+import Test.QuickCheck.All
 
 import Control.Exception
 
+import Data.Word (Word16, Word32)
 import Foreign.C.Types
 import Foreign.C.String
 import Foreign.Ptr
@@ -29,6 +33,8 @@ import Foreign.Storable
 import Foreign.Marshal.Utils
 import Foreign.Marshal.Alloc
 import Foreign.Marshal.Array
+
+import Control.Monad.STM
 
 import System.Random
 
@@ -82,8 +88,8 @@ type DHTHashCall = Ptr CChar -> CInt -> -- Hash Return
 
 -- |Represent a search result
 data SearchResult = End
-                  | IP4 HostAddress Int
-                  | IP6 HostAddress6 Int
+                  | IP4 HostAddress Word16
+                  | IP6 HostAddress6 Word16
 
 data DHT_ = DHT_ {
         searches :: MVar (Map.Map DHTID (TChan SearchResult, Int)),
@@ -163,11 +169,12 @@ cleanupDHT :: DHT_ -> IO ()
 cleanupDHT dht =
     freeHaskellFunPtr $ callback dht
 
+-- |Stop the DHT and clear all channels on the DHT side
 stopDHT :: DHT_ -> IO()
 stopDHT dht = do
     stopDHT_
     modifyMVar_ (searches dht) (\_ -> pure $ Map.empty) -- zero the map of searches
-    cleanupDHT dht
+    cleanupDHT dht -- useful to also clear the circular dependency in the DHT
 
 -- |Utility functions to create a socket IPv4
 makeSocket :: Maybe HostAddress -> Int -> IO (Maybe Socket)
@@ -192,7 +199,7 @@ withPersistSocket :: Maybe Socket -> (CInt -> IO a) -> IO a
 withPersistSocket sock f = f (maybe (CInt $ negate 1) fdSocket sock) `onException`
     maybe (return ()) close sock
 
--- |generates a random DHTID
+-- |Generates a random DHTID
 generateID :: IO DHTID
 generateID = do
     ptr <- mallocArray dhtIDSize
@@ -201,7 +208,6 @@ generateID = do
     return ptr
 
 -- |Searches for the specific DHT ID
---
 search :: DHT       -- ^ DHT Instance
        -> DHTID     -- ^ DHT ID to look for
        -> IO (TChan SearchResult) -- ^ new DHT structure and the channel to listen to
@@ -218,38 +224,55 @@ search (DHT dht) dst = do
 countProtocols :: DHT_ -> Int
 countProtocols d = fromEnum (ipv4 d) + fromEnum (ipv6 d)
 
+-- |Callback from DHT
 ffiCallback :: DHT_ -> FFICallback
 ffiCallback dht _ event hash addr len = do
     mchan <- withMVar (searches dht) $ return . Map.lookup hash
-    maybe (return ()) (\chan ->
+    maybe (return ()) (\(chan, count) -> 
         case event of
             0 -> return () -- no event
             1 -> do -- ipv4 found
                 -- addr is the ipv4 address and port in network byte order
                 ipv4addr <- peek $ castPtr addr :: IO HostAddress
-                port <- peekByteOff  addr (sizeOf ipv4addr) :: IO CShort
+                port <- peekByteOff  addr (sizeOf ipv4addr) :: IO Word16
+                atomically . writeTChan chan $ IP4 ipv4addr port
                 return ()
-            2 -> -- ipv6
+            2 -> do -- ipv6
+                [a,b,c,d] <- peekArray 4 $ castPtr addr :: IO [Word32]
+                port <- peekByteOff  addr (4* sizeOf a) :: IO Word16
+                atomically . writeTChan chan $ IP6 (a,b,c,d) port
                 return ()
+
             -- in case of 3 and 4 we have to check if we supported the other
             -- protocol or not. In case it was then we have to check if the
-            -- other search has finished too. (TODO need to store that
-            -- information somewhere
-            3 -> -- done ipv4
-                return ()
-            4 -> -- done ipv6
-                return ()
+            -- other search has finished too.
+            3 -> if count == 1
+                then remove dht -- done ipv4
+                else decrease dht
+            4 -> if count == 1
+                then remove dht -- done ipv6
+                else decrease dht
             _ -> return () -- Unknown event, ignore and hope for the best
         ) mchan
+    where
+        decreaseElem (Just (t,c)) = Just (t,c-1)
+        decreaseElem Nothing      = Nothing
+        decrease dht = modifyMVar_ (searches dht) (pure . Map.alter decreaseElem hash)
 
-invertEndian :: CShort -> CShort
+        remove dht = modifyMVar_ (searches dht) (pure . Map.delete hash)
+
+invertEndian :: Word16 -> Word16
 invertEndian s = let
-    low = s .&. 0x00FF
+    low  = s .&. 0x00FF
     high = s .&. 0xFF00
-    in
-        high `shiftL` 16 + low `shiftR` 16
+    in high `shiftR` 8 + low `shiftL` 8
 
 -- |Wrapper to pass the callback function to the C layer
 foreign import ccall "wrapper"
     mkCallback :: FFICallback -> IO (FunPtr FFICallback)
+
+prop_invertEndian_identity s = (==s) . invertEndian . invertEndian $ s
+
+return []
+runTests = $quickCheckAll
 
