@@ -17,11 +17,8 @@ module DHT
       withDHT,
       stopDHT,
       DHTID,
-      DHT,
-      runTests
+      DHT
     ) where
-
-import Test.QuickCheck.All
 
 import Control.Exception
 
@@ -77,6 +74,8 @@ foreign import ccall safe "ffi_stop_dht" stopDHT_ :: IO ()
 foreign import ccall safe "ffi_search" ffi_search :: DHTID -> IO CInt
 foreign import ccall safe "ffi_get_nodes" getNodes :: Ptr CInt -> Ptr CInt -> IO ()
 foreign import ccall safe "ffi_add_node" addNode :: Ptr () -> CShort -> IO ()
+
+foreign import ccall unsafe "ntohs" ntohs :: Word16 -> Word16
 
 -- |Utility for CInt and so on. Convert an integer from any to any type
 conv = fromIntegral . toInteger
@@ -232,15 +231,16 @@ ffiCallback dht _ event hash addr len = do
         case event of
             0 -> return () -- no event
             1 -> do -- ipv4 found
-                -- addr is the ipv4 address and port in network byte order
+                -- addr is the ipv4 address and port in host byte order
                 ipv4addr <- peek $ castPtr addr :: IO HostAddress
                 port <- peekByteOff  addr (sizeOf ipv4addr) :: IO Word16
-                atomically . writeTChan chan $ IP4 ipv4addr port
+                atomically . writeTChan chan . IP4 ipv4addr $ ntohs port
                 return ()
             2 -> do -- ipv6
+                -- addr is the ipv6 address and port in host byte order
                 [a,b,c,d] <- peekArray 4 $ castPtr addr :: IO [Word32]
                 port <- peekByteOff  addr (4* sizeOf a) :: IO Word16
-                atomically . writeTChan chan $ IP6 (a,b,c,d) port
+                atomically . writeTChan chan . IP6 (a,b,c,d) $ ntohs port
                 return ()
 
             -- in case of 3 and 4 we have to check if we supported the other
