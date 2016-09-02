@@ -145,7 +145,7 @@ runDHT v4 v6 port dht_id path = do
             else return dht_
 
     where
-        portC = CShort $! fromIntegral port
+        portC = fromIntegral port
 
         makeDHT = do
             entries <- newMVar Map.empty
@@ -181,6 +181,7 @@ makeSocket Nothing port = return Nothing
 makeSocket (Just host) port = do
     sock <- socket AF_INET Stream defaultProtocol
     bind sock $ SockAddrInet (fromIntegral port) host
+    listen sock 10
     return $ Just sock
 
 -- |Utility functions to create a socket IPv6
@@ -189,6 +190,7 @@ makeSocket6 Nothing port = return Nothing
 makeSocket6 (Just host) port = do
     sock <- socket AF_INET6 Stream defaultProtocol
     bind sock $ SockAddrInet6 (fromIntegral port) 0 host 0
+    listen sock 10
     return $ Just sock
 
 -- |Executes an action on the filedescriptor of the Socket

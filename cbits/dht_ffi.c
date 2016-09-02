@@ -258,6 +258,7 @@ int ffi_run_dht(
     assert(callback != NULL);
     assert(bootstrap_path != NULL);
 
+
     int rc = 0;
     fd4 = _fd4;
     fd6 = _fd6;
@@ -269,9 +270,9 @@ int ffi_run_dht(
     /* Setup randomness for the dht */
     srand(time(NULL) ^ getpid() ^ (int)pthread_self());
 
-    rc = load_bootstrap_nodes(bootstrap_path);
-    if (rc != 0)
-        return rc;
+    /*rc = */load_bootstrap_nodes(bootstrap_path);
+    /*if (rc != 0)
+        return rc;*/
 
     if (dht_init(fd4, fd6, id, NULL) < 0)
         return DHT_ERROR_INIT;
