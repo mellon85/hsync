@@ -72,9 +72,9 @@ dhtIDSize = 20
 -- | Pointer representing the DHTID address
 type DHTID = Ptr CChar
 
-foreign import ccall safe "ffi_run_dht" runDHT_ :: CInt -> CInt -> CShort ->
+foreign import ccall safe "ffi_run_dht" ffi_run_dht :: CInt -> CInt -> CShort ->
     DHTID -> FunPtr FFICallback -> CString -> IO CInt
-foreign import ccall safe "ffi_stop_dht" stopDHT_ :: IO ()
+foreign import ccall safe "ffi_stop_dht" ffi_stop_dht :: IO ()
 foreign import ccall safe "ffi_search" ffi_search :: DHTID -> IO CInt
 foreign import ccall safe "ffi_get_nodes" ffi_get_nodes :: Ptr CInt -> Ptr CInt -> IO ()
 foreign import ccall safe "ffi_add_node_4" ffi_add_node_4 :: Ptr () -> CShort -> IO ()
@@ -98,8 +98,7 @@ data SearchResult = End
 data DHT_ = DHT_ {
         searches :: MVar (Map.Map DHTID (TChan SearchResult, Int)),
         callback :: FunPtr FFICallback,
-        ipv4 :: Bool,
-        ipv6 :: Bool
+        protoCount :: Int
     }
 
 -- |Core representation of a DHT
@@ -143,7 +142,7 @@ runDHT v4 v6 port dht_id path = do
         r <- withPersistSocket fd4 (\fd4 -> do
             fd6 <- makeSocket6 v6 port
             withPersistSocket fd6 (\fd6 ->
-                withCString path $ runDHT_ fd4 fd6 portC dht_id (callback dht)))
+                withCString path $ ffi_run_dht fd4 fd6 portC dht_id (callback dht)))
         -- check r for exceptions
         if fromIntegral r /= 0
             then throw . Fail $ fromIntegral r
@@ -157,8 +156,8 @@ runDHT v4 v6 port dht_id path = do
             let dht = DHT_ {
                 searches = entries,
                 callback = nullFunPtr,
-                ipv4 = isJust v4,
-                ipv6 = isJust v6 }
+                protoCount = fromEnum (isJust v4) + fromEnum (isJust v6)
+            }
                 in do
                 callb <- mkCallback (ffiCallback dht )
                 return . DHT $ dht { callback = callb }
@@ -176,7 +175,7 @@ cleanupDHT dht =
 -- |Stop the DHT and clear all channels on the DHT side
 stopDHT :: DHT_ -> IO()
 stopDHT dht = do
-    stopDHT_
+    ffi_stop_dht
     modifyMVar_ (searches dht) (\_ -> pure Map.empty) -- zero the map of searches
     cleanupDHT dht -- useful to also clear the circular dependency in the DHT
 
@@ -225,10 +224,6 @@ search (DHT dht) dst = do
             modifyMVar_ (searches dht) $ pure . Map.insert dst (tchan, 0)
             return tchan
         _ -> throw . Fail $ fromIntegral ret
-
--- |Utility function to get a count for the protocols the searches have to end
-countProtocols :: DHT_ -> Int
-countProtocols d = fromEnum (ipv4 d) + fromEnum (ipv6 d)
 
 -- |Callback from DHT
 ffiCallback :: DHT_ -> FFICallback
