@@ -17,7 +17,10 @@ module DHT
       withDHT,
       stopDHT,
       DHTID,
-      DHT
+      DHT,
+      search,
+      nodes,
+      addNode
     ) where
 
 import Control.Exception
@@ -34,6 +37,7 @@ import Foreign.Marshal.Array
 import Control.Monad.STM
 
 import System.Random
+import Data.IP
 
 import Data.Map.Strict as Map
 import Data.Typeable (Typeable)
@@ -72,8 +76,9 @@ foreign import ccall safe "ffi_run_dht" runDHT_ :: CInt -> CInt -> CShort ->
     DHTID -> FunPtr FFICallback -> CString -> IO CInt
 foreign import ccall safe "ffi_stop_dht" stopDHT_ :: IO ()
 foreign import ccall safe "ffi_search" ffi_search :: DHTID -> IO CInt
-foreign import ccall safe "ffi_get_nodes" getNodes :: Ptr CInt -> Ptr CInt -> IO ()
-foreign import ccall safe "ffi_add_node" addNode :: Ptr () -> CShort -> IO ()
+foreign import ccall safe "ffi_get_nodes" ffi_get_nodes :: Ptr CInt -> Ptr CInt -> IO ()
+foreign import ccall safe "ffi_add_node_4" ffi_add_node_4 :: Ptr () -> CShort -> IO ()
+foreign import ccall safe "ffi_add_node_6" ffi_add_node_6 :: Ptr () -> CShort -> IO ()
 
 foreign import ccall unsafe "ntohs" ntohs :: Word16 -> Word16
 
@@ -265,4 +270,24 @@ ffiCallback dht _ event hash addr len = do
 -- |Wrapper to pass the callback function to the C layer
 foreign import ccall "wrapper"
     mkCallback :: FFICallback -> IO (FunPtr FFICallback)
+
+
+nodes :: IO (Int, Int)
+nodes = do
+    v4 <- malloc
+    v6 <- malloc
+    ffi_get_nodes v4 v6
+    v4count <- peek v4
+    v6count <- peek v6
+    return (fromIntegral v4count,fromIntegral v6count)
+
+addNode :: IP -> Word16 -> IO ()
+addNode (IPv4 ip) port =
+    allocaArray 4 (\ipPtr -> do
+        poke ipPtr (toHostAddress ip)
+        ffi_add_node_4 (castPtr ipPtr) $ fromIntegral port)
+addNode (IPv6 ip) port =
+    allocaArray 16 (\ipPtr -> do
+        poke ipPtr (toHostAddress6 ip)
+        ffi_add_node_6 (castPtr ipPtr) $ fromIntegral port)
 

@@ -331,12 +331,27 @@ void ffi_search(const unsigned char* restrict id)
     pthread_mutex_unlock(&lock);
 }
 
-void ffi_add_node(const struct sockaddr* restrict node, int len)
+void ffi_add_node_4(const void* restrict addr, short port)
 {
-    assert(node != NULL);
-    assert(len > 0);
+    struct sockaddr_in in;
+    memset(&in, 0, sizeof(struct sockaddr_in));
+    in.sin_family = AF_INET;
+    in.sin_port = htons(port);
+    memcpy(&in.sin_addr, addr, sizeof(in.sin_addr));
     pthread_mutex_lock(&lock);
-    dht_ping_node(node, len);
+    dht_ping_node((const struct sockaddr*)&in, sizeof(struct sockaddr_in));
+    pthread_mutex_unlock(&lock);
+}
+
+void ffi_add_node_6(const void* restrict addr, short port)
+{
+    struct sockaddr_in6 in;
+    memset(&in, 0, sizeof(struct sockaddr_in6));
+    in.sin6_family = AF_INET6;
+    in.sin6_port = htons(port);
+    memcpy(&in.sin6_addr, addr, sizeof(in.sin6_addr));
+    pthread_mutex_lock(&lock);
+    dht_ping_node((const struct sockaddr*)&in, sizeof(struct sockaddr_in6));
     pthread_mutex_unlock(&lock);
 }
 
