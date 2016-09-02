@@ -172,7 +172,7 @@ cleanupDHT dht =
 stopDHT :: DHT_ -> IO()
 stopDHT dht = do
     stopDHT_
-    modifyMVar_ (searches dht) (\_ -> pure $ Map.empty) -- zero the map of searches
+    modifyMVar_ (searches dht) (\_ -> pure Map.empty) -- zero the map of searches
     cleanupDHT dht -- useful to also clear the circular dependency in the DHT
 
 -- |Utility functions to create a socket IPv4
@@ -246,33 +246,21 @@ ffiCallback dht _ event hash addr len = do
             -- in case of 3 and 4 we have to check if we supported the other
             -- protocol or not. In case it was then we have to check if the
             -- other search has finished too.
-            3 -> if count == 1
-                then remove dht -- done ipv4
-                else decrease dht
-            4 -> if count == 1
-                then remove dht -- done ipv6
-                else decrease dht
+            3 -> receivedEnd chan count
+            4 -> receivedEnd chan count
             _ -> return () -- Unknown event, ignore and hope for the best
         ) mchan
     where
-        decreaseElem (Just (t,c)) = Just (t,c-1)
-        decreaseElem Nothing      = Nothing
-        decrease dht = modifyMVar_ (searches dht) (pure . Map.alter decreaseElem hash)
+        receivedEnd chan count | count > 1 = decrease dht
+                               | otherwise = do
+                                    atomically . writeTChan chan $ End
+                                    modifyMVar_ (searches dht) (pure . Map.delete hash)
 
-        remove dht = modifyMVar_ (searches dht) (pure . Map.delete hash)
-
-invertEndian :: Word16 -> Word16
-invertEndian s = let
-    low  = s .&. 0x00FF
-    high = s .&. 0xFF00
-    in high `shiftR` 8 + low `shiftL` 8
+        decrease dht = let
+            decreaseElem = maybe Nothing (\(t,c) -> Just (t,c-1))
+            in modifyMVar_ (searches dht) (pure . Map.alter decreaseElem hash)
 
 -- |Wrapper to pass the callback function to the C layer
 foreign import ccall "wrapper"
     mkCallback :: FFICallback -> IO (FunPtr FFICallback)
-
-prop_invertEndian_identity s = (==s) . invertEndian . invertEndian $ s
-
-return []
-runTests = $quickCheckAll
 
