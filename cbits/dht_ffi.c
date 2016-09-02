@@ -254,7 +254,7 @@ int ffi_run_dht(
     }
 
     assert(_fd4 > 0 || _fd6 > 0);
-    assert(id != NULL && strlen(id) == 20);
+    assert(id != NULL);
     assert(callback != NULL);
     assert(bootstrap_path != NULL);
 
@@ -305,9 +305,15 @@ void ffi_get_nodes(int *v4, int *v6) {
     assert(v4 != NULL || v6 != NULL); // one of the two should be not NULL
     pthread_mutex_lock(&lock);
     if (v4)
-        *v4 = dht_nodes(AF_INET, NULL, NULL, NULL, NULL);
+        if (fd4)
+            *v4 = dht_nodes(AF_INET, NULL, NULL, NULL, NULL);
+        else
+            *v4 = 0;
     if (v6)
-        *v6 = dht_nodes(AF_INET6, NULL, NULL, NULL, NULL);
+        if (fd6)
+            *v6 = dht_nodes(AF_INET6, NULL, NULL, NULL, NULL);
+        else
+            *v4 = 0;
     pthread_mutex_unlock(&lock);
 }
 
@@ -315,6 +321,8 @@ void ffi_stop_dht() {
     pthread_mutex_lock(&lock);
     close_fd(&fd4);
     close_fd(&fd6);
+    fd4 = -1;
+    fd6 = -1;
     pthread_mutex_unlock(&lock);
 }
 
@@ -333,25 +341,35 @@ void ffi_search(const unsigned char* restrict id)
 
 void ffi_add_node_4(const void* restrict addr, short port)
 {
+    static int id[5] = {1,0,0,0,0};
+    id[0]++;
     struct sockaddr_in in;
     memset(&in, 0, sizeof(struct sockaddr_in));
     in.sin_family = AF_INET;
     in.sin_port = htons(port);
     memcpy(&in.sin_addr, addr, sizeof(in.sin_addr));
     pthread_mutex_lock(&lock);
-    dht_ping_node((const struct sockaddr*)&in, sizeof(struct sockaddr_in));
+    dht_insert_node(
+            (const unsigned char*)id,
+            (struct sockaddr*)&in,
+            sizeof(struct sockaddr_in));
     pthread_mutex_unlock(&lock);
 }
 
 void ffi_add_node_6(const void* restrict addr, short port)
 {
+    static int id[5] = {0,0,0,0,0};
+    id[0]++;
     struct sockaddr_in6 in;
     memset(&in, 0, sizeof(struct sockaddr_in6));
     in.sin6_family = AF_INET6;
     in.sin6_port = htons(port);
     memcpy(&in.sin6_addr, addr, sizeof(in.sin6_addr));
     pthread_mutex_lock(&lock);
-    dht_ping_node((const struct sockaddr*)&in, sizeof(struct sockaddr_in6));
+    dht_insert_node(
+            (const unsigned char*)id,
+            (struct sockaddr*)&in,
+            sizeof(struct sockaddr_in6));
     pthread_mutex_unlock(&lock);
 }
 

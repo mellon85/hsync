@@ -12,15 +12,14 @@ Interface module to the C implementation of the DHT.
 -}
 
 module DHT
-    ( runDHT,
-      generateID,
+    ( generateID,
       withDHT,
       stopDHT,
       DHTID,
-      DHT,
       search,
       nodes,
-      addNode
+      addNode,
+      addRemoteBootstrapNodes
     ) where
 
 import Control.Exception
@@ -39,6 +38,7 @@ import Control.Monad.STM
 import System.Random
 import Data.IP
 
+import Control.Concurrent (forkIO)
 import Data.Map.Strict as Map
 import Data.Typeable (Typeable)
 
@@ -52,7 +52,7 @@ import Network.Socket
 
 -- Hash
 import Crypto.Hash
-import Data.ByteArray
+import Data.ByteArray as BA
 
 -- STM
 import Control.Concurrent.STM.TChan
@@ -95,14 +95,11 @@ data SearchResult = End
                   | IP4 HostAddress Word16
                   | IP6 HostAddress6 Word16
 
-data DHT_ = DHT_ {
+data DHT = DHT {
         searches :: MVar (Map.Map DHTID (TChan SearchResult, Int)),
         callback :: FunPtr FFICallback,
         protoCount :: Int
     }
-
--- |Core representation of a DHT
-newtype DHT = DHT DHT_
 
 -- |dht_hash implementation in haskell
 foreign export ccall dht_hash :: DHTHashCall
@@ -129,72 +126,65 @@ instance Exception DHTException
 
 -- |Runs the DHT and returns an error code (0 means everything's ok)
 -- Return an exception from an error code
-runDHT :: Maybe HostAddress     -- ^ IPv4 address
+runDHT :: DHT
+       -> Maybe HostAddress     -- ^ IPv4 address
        -> Maybe HostAddress6    -- ^ IPv6 address
        -> Int                   -- ^ Port number
        -> DHTID                 -- ^ DHT ID
        -> String                -- ^ Filepath with bootstrap nodes
-       -> IO DHT                -- ^ Return DHT structure (use exception?)
-runDHT v4 v6 port dht_id path = do
-    dht_@(DHT dht) <- makeDHT
-    safeDHT dht $ do
-        fd4 <- makeSocket v4 port
-        r <- withPersistSocket fd4 (\fd4 -> do
-            fd6 <- makeSocket6 v6 port
-            withPersistSocket fd6 (\fd6 ->
-                withCString path $ ffi_run_dht fd4 fd6 portC dht_id (callback dht)))
-        -- check r for exceptions
-        if fromIntegral r /= 0
-            then throw . Fail $ fromIntegral r
-            else return dht_
+       -> IO ()                 -- ^ Return DHT structure (use exception?)
+runDHT dht v4 v6 port dht_id path = do
+    fd4 <- makeSocket v4 port
+    r <- withPersistSocket fd4 (\fd4 -> do
+        fd6 <- makeSocket6 v6 port
+        withPersistSocket fd6 (\fd6 ->
+            withCString path $
+                ffi_run_dht fd4 fd6 (fromIntegral port) dht_id (callback dht)))
 
-    where
-        portC = fromIntegral port
+    -- check r for exceptions
+    when (fromIntegral r /= 0) $ throw . Fail $ fromIntegral r
 
-        makeDHT = do
-            entries <- newMVar Map.empty
-            let dht = DHT_ {
-                searches = entries,
-                callback = nullFunPtr,
-                protoCount = fromEnum (isJust v4) + fromEnum (isJust v6)
-            }
-                in do
-                callb <- mkCallback (ffiCallback dht )
-                return . DHT $ dht { callback = callb }
-        safeDHT d f = f `onException` cleanupDHT d
+makeDHT count = do
+    entries <- newMVar Map.empty
+    let dht = DHT {
+            searches = entries,
+            callback = nullFunPtr,
+            protoCount = count
+        }
+        in do
+        callb <- mkCallback (ffiCallback dht )
+        pure $ dht { callback = callb }
 
 -- | Safely use a DHT
-withDHT :: t -> IO DHT_ -> (DHT_ -> IO c) -> IO c
-withDHT d f = bracket f stopDHT
+withDHT v4 v6 port dht_id path f = do
+    dht <- makeDHT $ fromEnum (isJust v4) + fromEnum (isJust v6)
+    forkIO $ runDHT dht v4 v6 (fromIntegral port) dht_id path `finally` cleanupDHT dht
+    forkIO $ f dht
 
 -- Clean up all memory associated with the DHT structure
-cleanupDHT :: DHT_ -> IO ()
-cleanupDHT dht =
+cleanupDHT :: DHT -> IO ()
+cleanupDHT dht = do
+    modifyMVar_ (searches dht) (\_ -> pure Map.empty) -- zero the map of searches
     freeHaskellFunPtr $ callback dht
 
 -- |Stop the DHT and clear all channels on the DHT side
-stopDHT :: DHT_ -> IO()
-stopDHT dht = do
-    ffi_stop_dht
-    modifyMVar_ (searches dht) (\_ -> pure Map.empty) -- zero the map of searches
-    cleanupDHT dht -- useful to also clear the circular dependency in the DHT
+stopDHT :: IO()
+stopDHT = ffi_stop_dht
 
 -- |Utility functions to create a socket IPv4
 makeSocket :: Maybe HostAddress -> Int -> IO (Maybe Socket)
 makeSocket Nothing port = return Nothing
 makeSocket (Just host) port = do
-    sock <- socket AF_INET Stream defaultProtocol
+    sock <- socket AF_INET Datagram defaultProtocol
     bind sock $ SockAddrInet (fromIntegral port) host
-    listen sock 10
     return $ Just sock
 
 -- |Utility functions to create a socket IPv6
 makeSocket6 :: Maybe HostAddress6 -> Int -> IO (Maybe Socket)
 makeSocket6 Nothing port = return Nothing
 makeSocket6 (Just host) port = do
-    sock <- socket AF_INET6 Stream defaultProtocol
+    sock <- socket AF_INET6 Datagram defaultProtocol
     bind sock $ SockAddrInet6 (fromIntegral port) 0 host 0
-    listen sock 10
     return $ Just sock
 
 -- |Executes an action on the filedescriptor of the Socket
@@ -216,7 +206,7 @@ generateID = do
 search :: DHT       -- ^ DHT Instance
        -> DHTID     -- ^ DHT ID to look for
        -> IO (TChan SearchResult) -- ^ new DHT structure and the channel to listen to
-search (DHT dht) dst = do
+search dht dst = do
     tchan <- newTChanIO
     ret <- ffi_search dst
     case fromIntegral ret of
@@ -226,7 +216,7 @@ search (DHT dht) dst = do
         _ -> throw . Fail $ fromIntegral ret
 
 -- |Callback from DHT
-ffiCallback :: DHT_ -> FFICallback
+ffiCallback :: DHT -> FFICallback
 ffiCallback dht _ event hash addr len = do
     mchan <- withMVar (searches dht) $ return . Map.lookup hash
     maybe (return ()) (\(chan, count) -> 
@@ -277,12 +267,32 @@ nodes = do
     return (fromIntegral v4count,fromIntegral v6count)
 
 addNode :: IP -> Word16 -> IO ()
-addNode (IPv4 ip) port =
+addNode (IPv4 ip) port = flip addHostAddress port . toHostAddress $ ip
+addNode (IPv6 ip) port = flip addHostAddress6 port . toHostAddress6 $ ip
+
+addHostAddress addr port =
     allocaArray 4 (\ipPtr -> do
-        poke ipPtr (toHostAddress ip)
+        poke ipPtr addr
         ffi_add_node_4 (castPtr ipPtr) $ fromIntegral port)
-addNode (IPv6 ip) port =
+addHostAddress6 addr port =
     allocaArray 16 (\ipPtr -> do
-        poke ipPtr (toHostAddress6 ip)
+        poke ipPtr addr
         ffi_add_node_6 (castPtr ipPtr) $ fromIntegral port)
+
+bootstrapNodes = [
+    ("router.bittorrent.com", 8991),
+    ("router.utorrent.com", 6881),
+    ("dht.transmissionbt.com", 6881)]
+
+addRemoteBootstrapNodes :: IO ()
+addRemoteBootstrapNodes = do
+    addresses <- mapM getBootstrapNodes bootstrapNodes
+    mapM_ (uncurry addSockAddr) $ Prelude.concat addresses
+    where
+        getBootstrapNodes (host,port) =
+            getAddrInfo Nothing (Just host) Nothing >>=
+            mapM (pure . \a -> (addrAddress a,port))
+
+        addSockAddr (SockAddrInet _ addr) = addHostAddress addr
+        addSockAddr (SockAddrInet6 _ addr _ _) = addHostAddress6 addr
 
