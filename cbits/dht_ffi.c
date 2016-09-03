@@ -31,15 +31,6 @@ extern "C" {
 #define BOOTSTRAP_BATCH_SIZE 16
 #define DHT_ID_SIZE 20
 
-#define DHT_ERROR_INIT 1
-#define DHT_ERROR_SHUTDOWN 2
-#define DHT_ERROR_BOOTSTRAP 3
-#define DHT_ERROR_BOOTSTRAP_V4 4
-#define DHT_ERROR_BOOTSTRAP_V6 5
-#define DHT_ERROR_BOOTSTRAP_DUMP 6
-#define DHT_ERROR_BOOTSTRAP_DUMP_V4 7
-#define DHT_ERROR_BOOTSTRAP_DUMP_V6 8
-
 /***** GLOBALS */
 
 /* current DHT status */
@@ -52,92 +43,128 @@ static int v6counter;
 
 static int fd4;
 static int fd6;
-static int port;
+static short port;
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 /***** Private interface */
 static void ping_known_nodes();
-static int save_bootstrap_nodes(const char* path);
-static int load_bootstrap_nodes(const char* path);
-static void close_fd(int *fd);
+static void close_fd(int *);
+static int load_with_file(FILE *);
 
-#define CHECK_MALLOC(typ, op, c, err) {if((op = (typ*)malloc(sizeof(typ)*c)) == NULL)\
-    { rc = err; goto bad_bootstrap;}}
-#define CHECK_FREAD(v,s,c,f,e) {if(fread(v,s,c,f) != c) \
-    {fclose(f); rc = e; goto bad_bootstrap;} }
-#define CHECK_FREE(p) {if(p){free(p); p = NULL;}}
-
-static int load_bootstrap_nodes(const char* path)
+static int load_with_file(FILE *f)
 {
-    int rc = 0;
+    struct sockaddr_in* n4 = NULL;
+    struct sockaddr_in6* n6 = NULL;
+    int header[2];
 
-    if (f == NULL)
-        return DHT_ERROR_BOOTSTRAP;
-
-    debugf("read head\n");
     /* read header with all the counts */
-    CHECK_FREAD(&nodes_4_count, sizeof(int), 1, f, DHT_ERROR_BOOTSTRAP);
-    CHECK_FREAD(&nodes_6_count, sizeof(int), 1, f, DHT_ERROR_BOOTSTRAP);
+    if (fread(&header, sizeof(int), 2, f) != 2) {
+        return -2;
+    }
+
+    // header sanity checks
+    if (header[0] > BOOTSTRAP_SIZE || header[1] > BOOTSTRAP_SIZE) {
+        return 0; // file might be damaged, skip loading
+    }
+
+    if (header[0] > 0) {
+        n4 = (struct sockaddr_in*)malloc(sizeof(*n4)*header[0]);
+        if (n4 == NULL) {
+            return -3;
+        }
+        if (fread(n4, sizeof(*n4), header[0], f) != header[0]) {
+            // failed to read the data
+            free(n4);
+            return -4;
+        }
+    }
+
+    if (header[1] > 0) {
+        n6 = (struct sockaddr_in6*)malloc(sizeof(*n6)*header[1]);
+        if (n6 == NULL) {
+            if (n4 != NULL) free(n4);
+            return -5;
+        }
+        if (fread(n6, sizeof(*n6), header[1], f) != header[1])
+        {   // failed to read the data
+            if (n4 != NULL) free(n4);
+            free(n6);
+            return -6;
+        }
+    }
+
+    pthread_mutex_lock(&lock);
     debugf("header %d %d\n", nodes_4_count, nodes_6_count);
+    nodes_4_count = header[0];
+    nodes_6_count = header[1];
 
-    CHECK_MALLOC(struct sockaddr_in, nodes_4, nodes_4_count, DHT_ERROR_BOOTSTRAP_V4);
-    CHECK_FREAD(nodes_4, sizeof(struct sockaddr_in), nodes_4_count, f, DHT_ERROR_BOOTSTRAP_V4);
-    CHECK_MALLOC(struct sockaddr_in6, nodes_6, nodes_6_count, DHT_ERROR_BOOTSTRAP_V6);
-    CHECK_FREAD(nodes_6, sizeof(struct sockaddr_in6), nodes_6_count, f, DHT_ERROR_BOOTSTRAP_V6);
+    if (nodes_4) free(nodes_4);
+    nodes_4 = n4;
+    if (nodes_6) free(nodes_6);
+    nodes_6 = n6;
+    pthread_mutex_unlock(&lock);
 
-    fclose(f);
-    return rc;
+    return header[0]+header[1];
+}
 
-bad_bootstrap:
-    CHECK_FREE(nodes_4);
-    CHECK_FREE(nodes_6);
-    nodes_4_count = 0;
-    nodes_6_count = 0;
+int ffi_load_bootstrap_nodes(const char* path)
+{
+    assert(path);
+    FILE *f = fopen(path, "r");
+    if (f == NULL)
+        return -1;
+
+    const int rc = load_with_file(f);
     fclose(f);
     return rc;
 }
 
-#define CHECK_FWRITE(v,s,c,f,e) {if(fwrite(v,s,c,f) != c) \
-    {fclose(f); free(tmp_path); return e;} }
-static int save_bootstrap_nodes(const char* path)
+static int save_with_file(FILE *f)
 {
     struct sockaddr_in sin[BOOTSTRAP_SIZE];
     struct sockaddr_in6 sin6[BOOTSTRAP_SIZE];
-
     int header[2] = {BOOTSTRAP_SIZE, BOOTSTRAP_SIZE};
-    FILE *f;
 
-    debugf("get nodes\n");
     dht_get_nodes(sin, &header[0], sin6, &header[1]);
-    debugf("header %d %d\n", header[0], header[1]);
 
-    debugf("open\n");
+    debugf("write head\n");
+    if (fwrite(header, sizeof(*header), 2, f) != 2) {
+        return -2;
+    }
+
+    debugf("write data\n");
+    if (fwrite(sin, sizeof(*sin), header[0], f) != header[0]) {
+        return -3;
+    }
+    if (fwrite(sin6, sizeof(*sin6), header[1], f) != header[1]) {
+        return -4;
+    }
+
+    return header[0]+header[1];
+}
+
+int ffi_save_bootstrap_nodes(const char* path)
+{
     char* tmp_path = strdup(path);
     tmp_path = strcat(tmp_path, ".tmp");
-    f = fopen(tmp_path, "w+");
+    FILE *f = fopen(tmp_path, "w+");
     if (f == NULL)
     {
         free(tmp_path);
-        return DHT_ERROR_BOOTSTRAP_DUMP;
+        return -1;
     }
 
-    debugf("write head\n");
-    CHECK_FWRITE(&header, sizeof(int), 2, f, DHT_ERROR_BOOTSTRAP_DUMP);
-
-    debugf("write data\n");
-    CHECK_FWRITE(&sin, sizeof(struct sockaddr_in), header[0], f, DHT_ERROR_BOOTSTRAP_DUMP_V4);
-    CHECK_FWRITE(&sin6, sizeof(struct sockaddr_in6), header[1], f, DHT_ERROR_BOOTSTRAP_DUMP_V6);
-
-    debugf("close file\n");
+    int rc = save_with_file(f);
     fclose(f);
 
     /* swap file */
-    debugf("rename\n");
-    rename(tmp_path, path);
+    debugf("rename %s to %s\n", tmp_path, path);
+    if (rename(tmp_path, path) < 0)
+        rc = -5;
     free(tmp_path);
 
-    return 0;
+    return rc;
 }
 
 static void ping_known_nodes()
@@ -209,21 +236,19 @@ int ffi_run_dht(
     int _fd6, /* ipv6 socket fd. -1 it not used */
     int _port, /* port where the socket is bound */
     const unsigned char * restrict id /* 20 bytes id */,
-    dht_callback callback,
-    const char* restrict bootstrap_path /* bootstrap node data */)
+    dht_callback callback)
 {
     if (fd4 > 0 || fd6 > 0)
     {
         // Already initialized!
         return -2;
     }
+    port = htons(_port);
     dht_debug = fopen("dht.log", "w");
 
     assert(_fd4 > 0 || _fd6 > 0);
     assert(id != NULL);
     assert(callback != NULL);
-    assert(bootstrap_path != NULL);
-
 
     int rc = 0;
     fd4 = _fd4;
@@ -231,17 +256,12 @@ int ffi_run_dht(
     time_t estimated_time = 1;
     v4counter = 0;
     v6counter = 0;
-    port = htons(_port);
 
     /* Setup randomness for the dht */
     srand(time(NULL) ^ getpid() ^ (int)pthread_self());
 
-    /*rc = */load_bootstrap_nodes(bootstrap_path);
-    /*if (rc != 0)
-        return rc;*/
-
     if (dht_init(fd4, fd6, id, NULL) < 0)
-        return DHT_ERROR_INIT;
+        return -1;
 
     pthread_mutex_lock(&lock);
 
@@ -292,19 +312,17 @@ int ffi_run_dht(
             buff[rc] = '\0';
             dht_periodic(buff, rc, (struct sockaddr*)&from, fromlen,
                               &estimated_time, callback, NULL);
+            debugf("Estimated time %d\n", estimated_time);
         }
     }
     pthread_mutex_unlock(&lock);
 
     debugf("all socket closed\n");
-    debugf("bootstrap file saving%s\n", bootstrap_path);
-    rc = save_bootstrap_nodes(bootstrap_path);
-    if (rc != 0)
-        return rc;
-    debugf("bootstrap file saved %s\n", bootstrap_path);
 
     if (dht_uninit() < 0)
-        return DHT_ERROR_SHUTDOWN;
+        return -2;
+
+    debugf("uninit completed\n");
 
     return 0;
 }
@@ -323,7 +341,7 @@ void ffi_get_nodes(int *v4, int *v6) {
         else
             *v4 = 0;
     if (dht_debug)
-        dht_dump_tables(stdout);
+        dht_dump_tables(stderr);
     pthread_mutex_unlock(&lock);
 }
 
@@ -339,15 +357,18 @@ void ffi_stop_dht() {
     pthread_mutex_unlock(&lock);
 }
 
-void ffi_search(const unsigned char* restrict id)
+void ffi_search(const unsigned char* restrict id, dht_callback callback)
 {
     assert(id != NULL);
     pthread_mutex_lock(&lock);
 
+    printf("fd4 search\n");
     if (fd4 >= 0)
-        dht_search(id, port, AF_INET, NULL, NULL);
+        dht_search(id, 0, AF_INET, callback, NULL);
+    printf("fd6 search\n");
     if (fd6 >= 0)
-        dht_search(id, port, AF_INET6, NULL, NULL);
+        dht_search(id, 0, AF_INET6, callback, NULL);
+    printf("unlock\n");
 
     pthread_mutex_unlock(&lock);
 }

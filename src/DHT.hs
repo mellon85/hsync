@@ -19,6 +19,8 @@ module DHT
       search,
       nodes,
       addNode,
+      loadBootstrap,
+      saveBootstrap,
       addRemoteBootstrapNodes
     ) where
 
@@ -46,6 +48,7 @@ import Control.Monad
 import Data.Maybe (isJust)
 
 import Data.Bits (shiftR, shiftL, (.&.))
+import System.IO.Error
 
 -- Network
 import Network.Socket
@@ -73,12 +76,15 @@ dhtIDSize = 20
 type DHTID = Ptr CChar
 
 foreign import ccall safe "ffi_run_dht" ffi_run_dht :: CInt -> CInt -> CShort ->
-    DHTID -> FunPtr FFICallback -> CString -> IO CInt
+    DHTID -> FunPtr FFICallback -> IO CInt
 foreign import ccall safe "ffi_stop_dht" ffi_stop_dht :: IO ()
-foreign import ccall safe "ffi_search" ffi_search :: DHTID -> IO CInt
+foreign import ccall safe "ffi_search" ffi_search :: DHTID -> FunPtr FFICallback -> IO ()
 foreign import ccall safe "ffi_get_nodes" ffi_get_nodes :: Ptr CInt -> Ptr CInt -> IO ()
 foreign import ccall safe "ffi_add_node_4" ffi_add_node_4 :: Ptr () -> CShort -> IO ()
 foreign import ccall safe "ffi_add_node_6" ffi_add_node_6 :: Ptr () -> CShort -> IO ()
+
+foreign import ccall safe "ffi_load_bootstrap_nodes" ffi_load_bootstrap :: CString -> IO Int
+foreign import ccall safe "ffi_save_bootstrap_nodes" ffi_save_bootstrap :: CString -> IO Int
 
 foreign import ccall unsafe "ntohs" ntohs :: Word16 -> Word16
 
@@ -97,7 +103,7 @@ data SearchResult = End
 
 data DHT = DHT {
         searches :: MVar (Map.Map DHTID (TChan SearchResult, Int)),
-        callback :: FunPtr FFICallback,
+        callback :: MVar (FunPtr FFICallback),
         protoCount :: Int
     }
 
@@ -120,6 +126,8 @@ dht_hash dst dstl in1 in1l in2 in2l in3 in3l = do
         hash_all = hashFinalize . hashUpdates hashInit $ [in_1, in_2, in_3]
 
 data DHTException = DHTFail Int
+                  | BootstrapLoad Int
+                  | BootstrapSave Int
     deriving (Show, Typeable)
 
 instance Exception DHTException
@@ -131,41 +139,40 @@ runDHT :: DHT
        -> Maybe HostAddress6    -- ^ IPv6 address
        -> Int                   -- ^ Port number
        -> DHTID                 -- ^ DHT ID
-       -> String                -- ^ Filepath with bootstrap nodes
        -> IO ()                 -- ^ Return DHT structure (use exception?)
-runDHT dht v4 v6 port dht_id path = do
+runDHT dht v4 v6 port dht_id = do
     fd4 <- makeSocket v4 port
     r <- withPersistSocket fd4 (\fd4 -> do
         fd6 <- makeSocket6 v6 port
         withPersistSocket fd6 (\fd6 ->
-            withCString path $
-                ffi_run_dht fd4 fd6 (fromIntegral port) dht_id (callback dht)))
+            readMVar (callback dht) >>=
+                ffi_run_dht fd4 fd6 (fromIntegral port) dht_id))
 
     -- check r for exceptions
     when (fromIntegral r /= 0) $ throw . DHTFail $ fromIntegral r
 
 makeDHT count = do
     entries <- newMVar Map.empty
+    cb <- newEmptyMVar
     let dht = DHT {
             searches = entries,
-            callback = nullFunPtr,
+            callback = cb,
             protoCount = count
         }
         in do
-        callb <- mkCallback (ffiCallback dht )
-        pure $ dht { callback = callb }
+        mkCallback (ffiCallback dht) >>= putMVar (callback dht)
+        return dht
 
 startDHT :: Maybe HostAddress     -- ^ IPv4 address
          -> Maybe HostAddress6    -- ^ IPv6 address
          -> Int                   -- ^ Port number
          -> DHTID                 -- ^ DHT ID
-         -> String                -- ^ Filepath with bootstrap nodes
          -> IO DHT                -- ^ Return DHT structure (use exception?)
-startDHT v4 v6 port dht_id path = do
+startDHT v4 v6 port dht_id = do
     dht <- makeDHT $ fromEnum (isJust v4) + fromEnum (isJust v6)
     -- TODO stopDHT should atomically free the callback!
     -- or in case of exception during stop it does a double free
-    forkIO $ runDHT dht v4 v6 (fromIntegral port) dht_id path -- `onException` stopDHT dht
+    forkIO $ runDHT dht v4 v6 (fromIntegral port) dht_id `onException` stopDHT dht
     return dht
 
 -- |Stop the DHT and clear all channels on the DHT side
@@ -173,7 +180,9 @@ stopDHT :: DHT -> IO()
 stopDHT dht = do
     ffi_stop_dht
     modifyMVar_ (searches dht) (\_ -> pure Map.empty) -- zero the map of searches
-    freeHaskellFunPtr $ callback dht
+    cb <- tryTakeMVar (callback dht)
+    return $ freeHaskellFunPtr <$> cb
+    return ()
 
 -- |Utility functions to create a socket IPv4
 makeSocket :: Maybe HostAddress -> Int -> IO (Maybe Socket)
@@ -212,16 +221,17 @@ search :: DHT       -- ^ DHT Instance
        -> IO (TChan SearchResult) -- ^ new DHT structure and the channel to listen to
 search dht dst = do
     tchan <- newTChanIO
-    ret <- ffi_search dst
-    when (fromIntegral ret < 0) $ throw . DHTFail $ fromIntegral ret
+    forkIO $ readMVar (callback dht) >>= ffi_search dst
     modifyMVar_ (searches dht) $ pure . Map.insert dst (tchan, 0)
     return tchan
 
 -- |Callback from DHT
 ffiCallback :: DHT -> FFICallback
 ffiCallback dht _ event hash addr len = do
+    putStrLn "callback called"
+    print event
     mchan <- withMVar (searches dht) $ return . Map.lookup hash
-    maybe (return ()) (\(chan, count) -> 
+    maybe (return ()) (\(chan, count) ->
         case event of
             0 -> return () -- no event
             1 -> do -- ipv4 found
@@ -297,4 +307,18 @@ addRemoteBootstrapNodes = do
 
         addSockAddr (SockAddrInet _ addr) = addHostAddress addr
         addSockAddr (SockAddrInet6 _ addr _ _) = addHostAddress6 addr
+
+loadBootstrap :: String -> IO Int
+loadBootstrap path = do
+    r <- withCString path ffi_load_bootstrap
+    when (fromIntegral r < 0) . throw $
+        mkIOError userErrorType (show r++" Loading DHT bootstrap data") Nothing (Just path)
+    return r
+
+saveBootstrap :: String -> IO Int
+saveBootstrap path = do
+    r <- withCString path ffi_save_bootstrap
+    when (fromIntegral r < 0) . throw $
+        mkIOError userErrorType (show r++" Saving DHT bootstrap data") Nothing (Just path)
+    return r
 

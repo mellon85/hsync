@@ -20,8 +20,7 @@ struct sockaddr;
  * FFI import: safe
  */
 int ffi_run_dht(int fd4, int fd6, int port, const unsigned char* restrict id,
-        dht_callback _callback,
-    const char * restrict bootstrap_path /* bootstrap node data */);
+        dht_callback _callback);
 
 /**
  * Sends to the DHT node a command to stop the execution and give control back
@@ -35,7 +34,7 @@ void ffi_stop_dht();
  * dht_callback.
  * FFI import: safe
  */
-void ffi_search(const unsigned char* restrict id);
+void ffi_search(const unsigned char* restrict id, dht_callback callback);
 
 /**
  * Returns the count of ipv4 nodes known by the DHT node.
@@ -48,6 +47,18 @@ void ffi_get_nodes(int* restrict /*v4*/, int* restrict /*v6*/);
  * FFI import: safe
  */
 void ffi_add_node(const struct sockaddr* restrict /*node*/, int /*len*/);
+
+/**
+ * Load bootstrap nodes from the saved file path
+ * FFI import: safe
+ */
+int ffi_load_bootstrap_nodes(const char* path);
+
+/**
+ * Saves bootstrap nodes from the current state
+ * FFI import: safe
+ */
+int ffi_save_bootstrap_nodes(const char* path);
 
 #ifdef __cplusplus
 }
