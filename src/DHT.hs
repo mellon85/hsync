@@ -21,9 +21,11 @@ module DHT
       addNode,
       loadBootstrap,
       saveBootstrap,
-      addRemoteBootstrapNodes
+      addRemoteBootstrapNodes,
+      conditionalBootstrap
     ) where
 
+import System.Directory
 import Control.Exception
 
 import Data.Word (Word16, Word32)
@@ -321,4 +323,13 @@ saveBootstrap path = do
     when (fromIntegral r < 0) . throw $
         mkIOError userErrorType (show r++" Saving DHT bootstrap data") Nothing (Just path)
     return r
+
+conditionalBootstrap :: String -> IO()
+conditionalBootstrap file = do
+    exists <- doesFileExist file
+    if exists
+    then do
+        n <- loadBootstrap "nodes.dump"
+        when (n < 100) addRemoteBootstrapNodes
+    else addRemoteBootstrapNodes
 
