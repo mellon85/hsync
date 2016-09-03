@@ -8,16 +8,13 @@ main :: IO ()
 main = do
     putStrLn "starting"
     id <- D.generateID
-    dht <- D.startDHT (Just 0) Nothing 4444 id ""
+    dht <- D.startDHT (Just 0) Nothing 4444 id "nodes.dump"
     putStrLn "started DHT"
-    D.addRemoteBootstrapNodes
+    --D.addRemoteBootstrapNodes
     putStrLn "bootstrap nodes sent"
     threadDelay 20000000
-    t <- D.nodes
-    print t
-    id <- D.generateID
-    D.search dht id
-    threadDelay 20000000
-    t <- D.nodes
-    print t
+    D.nodes >>= print
+    putStrLn "Stopping"
+    D.nodes >>= print
     D.stopDHT dht
+    threadDelay 20000000

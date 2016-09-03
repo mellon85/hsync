@@ -43,8 +43,8 @@ extern "C" {
 /***** GLOBALS */
 
 /* current DHT status */
-static struct sockaddr_in* nodes_4;
-static struct sockaddr_in6* nodes_6;
+static struct sockaddr_in* nodes_4 = NULL;
+static struct sockaddr_in6* nodes_6 = NULL;
 static int nodes_4_count;
 static int nodes_6_count;
 static int v4counter;
@@ -62,28 +62,29 @@ static int save_bootstrap_nodes(const char* path);
 static int load_bootstrap_nodes(const char* path);
 static void close_fd(int *fd);
 
-#define CHECK_MALLOC(typ, op, c, err) {if((op = (typ)malloc(sizeof(typ)*c)) == NULL)\
+#define CHECK_MALLOC(typ, op, c, err) {if((op = (typ*)malloc(sizeof(typ)*c)) == NULL)\
     { rc = err; goto bad_bootstrap;}}
-#define CHECK_FREAD(v,s,c,f,e) {if(fread(v,s,c,f) != s*c) \
+#define CHECK_FREAD(v,s,c,f,e) {if(fread(v,s,c,f) != c) \
     {fclose(f); rc = e; goto bad_bootstrap;} }
-#define CHECK_FREE(p) {if(p!=NULL){free(p); p = NULL;}}
+#define CHECK_FREE(p) {if(p){free(p); p = NULL;}}
 
 static int load_bootstrap_nodes(const char* path)
 {
-    FILE *f = fopen(path, "rb+");
     int rc = 0;
 
     if (f == NULL)
         return DHT_ERROR_BOOTSTRAP;
 
+    debugf("read head\n");
     /* read header with all the counts */
     CHECK_FREAD(&nodes_4_count, sizeof(int), 1, f, DHT_ERROR_BOOTSTRAP);
     CHECK_FREAD(&nodes_6_count, sizeof(int), 1, f, DHT_ERROR_BOOTSTRAP);
+    debugf("header %d %d\n", nodes_4_count, nodes_6_count);
 
-    CHECK_MALLOC(struct sockaddr_in*, nodes_4, nodes_4_count, DHT_ERROR_BOOTSTRAP_V4);
-    CHECK_FREAD(&nodes_4, sizeof(struct sockaddr_in), nodes_4_count, f, DHT_ERROR_BOOTSTRAP_V4);
-    CHECK_MALLOC(struct sockaddr_in6*, nodes_6, nodes_6_count, DHT_ERROR_BOOTSTRAP_V6);
-    CHECK_FREAD(&nodes_6, sizeof(struct sockaddr_in6), nodes_6_count, f, DHT_ERROR_BOOTSTRAP_V6);
+    CHECK_MALLOC(struct sockaddr_in, nodes_4, nodes_4_count, DHT_ERROR_BOOTSTRAP_V4);
+    CHECK_FREAD(nodes_4, sizeof(struct sockaddr_in), nodes_4_count, f, DHT_ERROR_BOOTSTRAP_V4);
+    CHECK_MALLOC(struct sockaddr_in6, nodes_6, nodes_6_count, DHT_ERROR_BOOTSTRAP_V6);
+    CHECK_FREAD(nodes_6, sizeof(struct sockaddr_in6), nodes_6_count, f, DHT_ERROR_BOOTSTRAP_V6);
 
     fclose(f);
     return rc;
@@ -97,19 +98,21 @@ bad_bootstrap:
     return rc;
 }
 
-#define CHECK_FWRITE(v,s,c,f,e) {if(fwrite(v,s,c,f) != s*c) \
+#define CHECK_FWRITE(v,s,c,f,e) {if(fwrite(v,s,c,f) != c) \
     {fclose(f); free(tmp_path); return e;} }
 static int save_bootstrap_nodes(const char* path)
 {
     struct sockaddr_in sin[BOOTSTRAP_SIZE];
     struct sockaddr_in6 sin6[BOOTSTRAP_SIZE];
 
-    int sinc = BOOTSTRAP_SIZE;
-    int sin6c = BOOTSTRAP_SIZE;
+    int header[2] = {BOOTSTRAP_SIZE, BOOTSTRAP_SIZE};
     FILE *f;
 
-    dht_get_nodes(sin, &sinc, sin6, &sin6c);
+    debugf("get nodes\n");
+    dht_get_nodes(sin, &header[0], sin6, &header[1]);
+    debugf("header %d %d\n", header[0], header[1]);
 
+    debugf("open\n");
     char* tmp_path = strdup(path);
     tmp_path = strcat(tmp_path, ".tmp");
     f = fopen(tmp_path, "w+");
@@ -119,14 +122,18 @@ static int save_bootstrap_nodes(const char* path)
         return DHT_ERROR_BOOTSTRAP_DUMP;
     }
 
-    CHECK_FWRITE(&sinc, sizeof(int), 1, f, DHT_ERROR_BOOTSTRAP_DUMP);
-    CHECK_FWRITE(&sin6c, sizeof(int), 1, f, DHT_ERROR_BOOTSTRAP_DUMP);
+    debugf("write head\n");
+    CHECK_FWRITE(&header, sizeof(int), 2, f, DHT_ERROR_BOOTSTRAP_DUMP);
 
-    CHECK_FWRITE(&sin, sizeof(struct sockaddr_in), sinc, f, DHT_ERROR_BOOTSTRAP_DUMP_V4);
-    CHECK_FWRITE(&sin6, sizeof(struct sockaddr_in6), sin6c, f, DHT_ERROR_BOOTSTRAP_DUMP_V6);
+    debugf("write data\n");
+    CHECK_FWRITE(&sin, sizeof(struct sockaddr_in), header[0], f, DHT_ERROR_BOOTSTRAP_DUMP_V4);
+    CHECK_FWRITE(&sin6, sizeof(struct sockaddr_in6), header[1], f, DHT_ERROR_BOOTSTRAP_DUMP_V6);
+
+    debugf("close file\n");
     fclose(f);
 
     /* swap file */
+    debugf("rename\n");
     rename(tmp_path, path);
     free(tmp_path);
 
@@ -210,6 +217,7 @@ int ffi_run_dht(
         // Already initialized!
         return -2;
     }
+    dht_debug = fopen("dht.log", "w");
 
     assert(_fd4 > 0 || _fd6 > 0);
     assert(id != NULL);
@@ -288,9 +296,12 @@ int ffi_run_dht(
     }
     pthread_mutex_unlock(&lock);
 
+    debugf("all socket closed\n");
+    debugf("bootstrap file saving%s\n", bootstrap_path);
     rc = save_bootstrap_nodes(bootstrap_path);
     if (rc != 0)
         return rc;
+    debugf("bootstrap file saved %s\n", bootstrap_path);
 
     if (dht_uninit() < 0)
         return DHT_ERROR_SHUTDOWN;
@@ -312,12 +323,13 @@ void ffi_get_nodes(int *v4, int *v6) {
         else
             *v4 = 0;
     if (dht_debug)
-	dht_dump_tables(stdout);
+        dht_dump_tables(stdout);
     pthread_mutex_unlock(&lock);
 }
 
 void ffi_stop_dht() {
     pthread_mutex_lock(&lock);
+    debugf("stop\n");
     if (fd4 > 0)
         close_fd(&fd4);
     if (fd6 > 0)
@@ -342,16 +354,13 @@ void ffi_search(const unsigned char* restrict id)
 
 void ffi_add_node_4(const void* restrict addr, short port)
 {
-    static int id[5] = {1,0,0,0,0};
-    id[0]++;
     struct sockaddr_in in;
     memset(&in, 0, sizeof(struct sockaddr_in));
     in.sin_family = AF_INET;
     in.sin_port = htons(port);
     memcpy(&in.sin_addr, addr, sizeof(in.sin_addr));
     pthread_mutex_lock(&lock);
-    dht_insert_node(
-            (const unsigned char*)id,
+    dht_ping_node(
             (struct sockaddr*)&in,
             sizeof(struct sockaddr_in));
     pthread_mutex_unlock(&lock);
@@ -359,16 +368,13 @@ void ffi_add_node_4(const void* restrict addr, short port)
 
 void ffi_add_node_6(const void* restrict addr, short port)
 {
-    static int id[5] = {0,0,0,0,0};
-    id[0]++;
     struct sockaddr_in6 in;
     memset(&in, 0, sizeof(struct sockaddr_in6));
     in.sin6_family = AF_INET6;
     in.sin6_port = htons(port);
     memcpy(&in.sin6_addr, addr, sizeof(in.sin6_addr));
     pthread_mutex_lock(&lock);
-    dht_insert_node(
-            (const unsigned char*)id,
+    dht_ping_node(
             (struct sockaddr*)&in,
             sizeof(struct sockaddr_in6));
     pthread_mutex_unlock(&lock);

@@ -119,7 +119,7 @@ dht_hash dst dstl in1 in1l in2 in2l in3 in3l = do
         hash_all :: Digest SHA1
         hash_all = hashFinalize . hashUpdates hashInit $ [in_1, in_2, in_3]
 
-data DHTException = Fail Int
+data DHTException = DHTFail Int
     deriving (Show, Typeable)
 
 instance Exception DHTException
@@ -142,7 +142,7 @@ runDHT dht v4 v6 port dht_id path = do
                 ffi_run_dht fd4 fd6 (fromIntegral port) dht_id (callback dht)))
 
     -- check r for exceptions
-    when (fromIntegral r /= 0) $ throw . Fail $ fromIntegral r
+    when (fromIntegral r /= 0) $ throw . DHTFail $ fromIntegral r
 
 makeDHT count = do
     entries <- newMVar Map.empty
@@ -163,7 +163,9 @@ startDHT :: Maybe HostAddress     -- ^ IPv4 address
          -> IO DHT                -- ^ Return DHT structure (use exception?)
 startDHT v4 v6 port dht_id path = do
     dht <- makeDHT $ fromEnum (isJust v4) + fromEnum (isJust v6)
-    forkIO $ runDHT dht v4 v6 (fromIntegral port) dht_id path `onException` stopDHT dht
+    -- TODO stopDHT should atomically free the callback!
+    -- or in case of exception during stop it does a double free
+    forkIO $ runDHT dht v4 v6 (fromIntegral port) dht_id path -- `onException` stopDHT dht
     return dht
 
 -- |Stop the DHT and clear all channels on the DHT side
@@ -211,7 +213,7 @@ search :: DHT       -- ^ DHT Instance
 search dht dst = do
     tchan <- newTChanIO
     ret <- ffi_search dst
-    when (fromIntegral ret < 0) $ throw . Fail $ fromIntegral ret
+    when (fromIntegral ret < 0) $ throw . DHTFail $ fromIntegral ret
     modifyMVar_ (searches dht) $ pure . Map.insert dst (tchan, 0)
     return tchan
 
