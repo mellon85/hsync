@@ -19,7 +19,7 @@ struct sockaddr;
  * - bootstrap_path file path containing the bootstrap node informations
  * FFI import: safe
  */
-int ffi_run_dht(int fd4, int fd6, int port, const unsigned char* restrict id,
+int ffi_run_dht(int fd4, int fd6, const unsigned char* restrict id,
         dht_callback _callback);
 
 /**
@@ -34,7 +34,7 @@ void ffi_stop_dht();
  * dht_callback.
  * FFI import: safe
  */
-void ffi_search(const unsigned char* restrict id, dht_callback callback);
+void ffi_search(const unsigned char* restrict id, short port, dht_callback callback);
 
 /**
  * Returns the count of ipv4 nodes known by the DHT node.

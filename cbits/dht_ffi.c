@@ -43,7 +43,6 @@ static int v6counter;
 
 static int fd4;
 static int fd6;
-static short port;
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -234,7 +233,6 @@ int dht_blacklisted(const struct sockaddr *sa, int salen){
 int ffi_run_dht(
     int _fd4, /* ipv4 socket fd. -1 if not used */
     int _fd6, /* ipv6 socket fd. -1 it not used */
-    int _port, /* port where the socket is bound */
     const unsigned char * restrict id /* 20 bytes id */,
     dht_callback callback)
 {
@@ -243,8 +241,7 @@ int ffi_run_dht(
         // Already initialized!
         return -2;
     }
-    port = htons(_port);
-    dht_debug = fopen("dht.log", "w");
+    //dht_debug = fopen("dht.log", "w");
 
     assert(_fd4 > 0 || _fd6 > 0);
     assert(id != NULL);
@@ -357,7 +354,7 @@ void ffi_stop_dht() {
     pthread_mutex_unlock(&lock);
 }
 
-void ffi_search(const unsigned char* restrict id, dht_callback callback)
+void ffi_search(const unsigned char* restrict id, short port, dht_callback callback)
 {
     assert(id != NULL);
     pthread_mutex_lock(&lock);

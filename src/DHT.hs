@@ -17,6 +17,7 @@ module DHT
       stopDHT,
       DHTID,
       search,
+      announce,
       nodes,
       addNode,
       loadBootstrap,
@@ -77,10 +78,10 @@ dhtIDSize = 20
 -- | Pointer representing the DHTID address
 type DHTID = Ptr CChar
 
-foreign import ccall safe "ffi_run_dht" ffi_run_dht :: CInt -> CInt -> CShort ->
+foreign import ccall safe "ffi_run_dht" ffi_run_dht :: CInt -> CInt ->
     DHTID -> FunPtr FFICallback -> IO CInt
 foreign import ccall safe "ffi_stop_dht" ffi_stop_dht :: IO ()
-foreign import ccall safe "ffi_search" ffi_search :: DHTID -> FunPtr FFICallback -> IO ()
+foreign import ccall safe "ffi_search" ffi_search :: DHTID -> CShort -> FunPtr FFICallback -> IO ()
 foreign import ccall safe "ffi_get_nodes" ffi_get_nodes :: Ptr CInt -> Ptr CInt -> IO ()
 foreign import ccall safe "ffi_add_node_4" ffi_add_node_4 :: Ptr () -> CShort -> IO ()
 foreign import ccall safe "ffi_add_node_6" ffi_add_node_6 :: Ptr () -> CShort -> IO ()
@@ -106,7 +107,8 @@ data SearchResult = End
 data DHT = DHT {
         searches :: MVar (Map.Map DHTID (TChan SearchResult, Int)),
         callback :: MVar (FunPtr FFICallback),
-        protoCount :: Int
+        protoCount :: Int,
+        announcePort :: CShort
     }
 
 -- |dht_hash implementation in haskell
@@ -148,18 +150,19 @@ runDHT dht v4 v6 port dht_id = do
         fd6 <- makeSocket6 v6 port
         withPersistSocket fd6 (\fd6 ->
             readMVar (callback dht) >>=
-                ffi_run_dht fd4 fd6 (fromIntegral port) dht_id))
+                ffi_run_dht fd4 fd6 dht_id))
 
     -- check r for exceptions
     when (fromIntegral r /= 0) $ throw . DHTFail $ fromIntegral r
 
-makeDHT count = do
+makeDHT count port = do
     entries <- newMVar Map.empty
     cb <- newEmptyMVar
     let dht = DHT {
             searches = entries,
             callback = cb,
-            protoCount = count
+            protoCount = count,
+            announcePort = fromIntegral $ port
         }
         in do
         mkCallback (ffiCallback dht) >>= putMVar (callback dht)
@@ -171,7 +174,7 @@ startDHT :: Maybe HostAddress     -- ^ IPv4 address
          -> DHTID                 -- ^ DHT ID
          -> IO DHT                -- ^ Return DHT structure (use exception?)
 startDHT v4 v6 port dht_id = do
-    dht <- makeDHT $ fromEnum (isJust v4) + fromEnum (isJust v6)
+    dht <- makeDHT (fromEnum (isJust v4) + fromEnum (isJust v6)) port
     -- TODO stopDHT should atomically free the callback!
     -- or in case of exception during stop it does a double free
     forkIO $ runDHT dht v4 v6 (fromIntegral port) dht_id `onException` stopDHT dht
@@ -221,10 +224,22 @@ generateID = do
 search :: DHT       -- ^ DHT Instance
        -> DHTID     -- ^ DHT ID to look for
        -> IO (TChan SearchResult) -- ^ new DHT structure and the channel to listen to
-search dht dst = do
+search dht dst = search' dht dst 0
+    
+-- |Searches for the specific DHT ID
+announce :: DHT       -- ^ DHT Instance
+       -> DHTID     -- ^ DHT ID to look for
+       -> IO (TChan SearchResult) -- ^ new DHT structure and the channel to listen to
+announce dht dst = search' dht dst (announcePort dht)
+    
+search' :: DHT      -- ^ DHT Instance
+       -> DHTID     -- ^ DHT ID to look for
+       -> CShort    -- ^ port
+       -> IO (TChan SearchResult) -- ^ new DHT structure and the channel to listen to
+search' dht dht_id port = do
     tchan <- newTChanIO
-    forkIO $ readMVar (callback dht) >>= ffi_search dst
-    modifyMVar_ (searches dht) $ pure . Map.insert dst (tchan, 0)
+    forkIO $ readMVar (callback dht) >>= ffi_search dht_id port
+    modifyMVar_ (searches dht) $ pure . Map.insert dht_id (tchan, protoCount dht)
     return tchan
 
 -- |Callback from DHT
