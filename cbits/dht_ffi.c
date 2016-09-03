@@ -60,49 +60,7 @@ static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static void ping_known_nodes();
 static int save_bootstrap_nodes(const char* path);
 static int load_bootstrap_nodes(const char* path);
-static time_t periodic_call(dht_callback /*callback*/);
-static void wait_for_events_on_fd(int fd4, int fd6, time_t estimated_time);
 static void close_fd(int *fd);
-
-/****** INTERNAL */
-
-static void wait_for_events_on_fd(int fd4, int fd6, time_t estimated_time)
-{
-    fd_set fd_read, fd_write, fd_error;
-    FD_ZERO(&fd_read);
-    FD_ZERO(&fd_write);
-    FD_ZERO(&fd_error);
-
-    int nfds = 0;
-    if (fd4 >= 0)
-    {
-        ++nfds;
-        FD_SET(fd4, &fd_read);
-        FD_SET(fd4, &fd_error);
-    }
-
-    if (fd6 >= 0)
-    {
-        ++nfds;
-        FD_SET(fd6, &fd_read);
-        FD_SET(fd6, &fd_error);
-    }
-
-    struct timeval event_timeout;
-    event_timeout.tv_sec = estimated_time;
-    event_timeout.tv_usec = 1000; /* +1/10 of a second */
-
-    pthread_mutex_unlock(&lock);
-    select(nfds, &fd_read, &fd_write, &fd_error, &event_timeout);
-    pthread_mutex_lock(&lock);
-}
-
-static time_t periodic_call(dht_callback callback)
-{
-    time_t tosleep;
-    dht_periodic(NULL, 0, NULL, 0, &tosleep, callback, NULL);
-    return tosleep;
-}
 
 #define CHECK_MALLOC(typ, op, c, err) {if((op = (typ)malloc(sizeof(typ)*c)) == NULL)\
     { rc = err; goto bad_bootstrap;}}
@@ -282,12 +240,51 @@ int ffi_run_dht(
     /* core loop */
     while(fd4 >= 0 || fd6 >= 0)
     {
-        ping_known_nodes();
-        estimated_time = periodic_call(callback);
+        static char buff[4096];
+        int len = 0;
 
-        /* wait for evenst will release the lock while the worker is suspended
-         * in the select call. */
-        wait_for_events_on_fd(fd4, fd6, estimated_time);
+        ping_known_nodes();
+
+        struct timeval event_timeout;
+        event_timeout.tv_sec = estimated_time;
+        event_timeout.tv_usec = 1000; /* +1/10 of a second */
+
+        // check events
+        fd_set fd_read, fd_write, fd_error;
+        FD_ZERO(&fd_read);
+        FD_ZERO(&fd_write);
+        FD_ZERO(&fd_error);
+
+        if (fd4 >= 0) {
+            FD_SET(fd4, &fd_read);
+            FD_SET(fd4, &fd_error);
+        }
+
+        if (fd6 >= 0) {
+            FD_SET(fd6, &fd_read);
+            FD_SET(fd6, &fd_error);
+        }
+
+        pthread_mutex_unlock(&lock);
+        int rc = select((fd4 > fd6 ? fd4 : fd6)+1, &fd_read, &fd_write, &fd_error, &event_timeout);
+        pthread_mutex_lock(&lock);
+
+        struct sockaddr_storage from;
+        int fromlen = sizeof(from);
+        if(rc > 0) {
+            if(fd4 >= 0 && FD_ISSET(fd4, &fd_read))
+                rc = recvfrom(fd4, buff, sizeof(buff) - 1, 0,
+                              (struct sockaddr*)&from, &fromlen);
+            else if(fd6 >= 0 && FD_ISSET(fd6, &fd_read))
+                rc = recvfrom(fd6, buff, sizeof(buff) - 1, 0,
+                              (struct sockaddr*)&from, &fromlen);
+            debugf("received %d\n", rc);
+        }
+        if(rc > 0) {
+            buff[rc] = '\0';
+            dht_periodic(buff, rc, (struct sockaddr*)&from, fromlen,
+                              &estimated_time, callback, NULL);
+        }
     }
     pthread_mutex_unlock(&lock);
 
@@ -314,13 +311,17 @@ void ffi_get_nodes(int *v4, int *v6) {
             *v6 = dht_nodes(AF_INET6, NULL, NULL, NULL, NULL);
         else
             *v4 = 0;
+    if (dht_debug)
+	dht_dump_tables(stdout);
     pthread_mutex_unlock(&lock);
 }
 
 void ffi_stop_dht() {
     pthread_mutex_lock(&lock);
-    close_fd(&fd4);
-    close_fd(&fd6);
+    if (fd4 > 0)
+        close_fd(&fd4);
+    if (fd6 > 0)
+        close_fd(&fd6);
     fd4 = -1;
     fd6 = -1;
     pthread_mutex_unlock(&lock);

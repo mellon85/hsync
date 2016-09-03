@@ -8,16 +8,16 @@ main :: IO ()
 main = do
     putStrLn "starting"
     id <- D.generateID
-    barrier <- newEmptyMVar
-    D.withDHT (Just 0) Nothing 4444 id "" $ \dht -> do
-        putStrLn "started DHT"
-        t <- takeMVar barrier
-        putStrLn ".."
-        return ()
+    dht <- D.startDHT (Just 0) Nothing 4444 id ""
+    putStrLn "started DHT"
     D.addRemoteBootstrapNodes
     putStrLn "bootstrap nodes sent"
     threadDelay 20000000
     t <- D.nodes
     print t
-    putMVar barrier ()
-
+    id <- D.generateID
+    D.search dht id
+    threadDelay 20000000
+    t <- D.nodes
+    print t
+    D.stopDHT dht

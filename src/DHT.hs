@@ -13,7 +13,7 @@ Interface module to the C implementation of the DHT.
 
 module DHT
     ( generateID,
-      withDHT,
+      startDHT,
       stopDHT,
       DHTID,
       search,
@@ -155,21 +155,23 @@ makeDHT count = do
         callb <- mkCallback (ffiCallback dht )
         pure $ dht { callback = callb }
 
--- | Safely use a DHT
-withDHT v4 v6 port dht_id path f = do
+startDHT :: Maybe HostAddress     -- ^ IPv4 address
+         -> Maybe HostAddress6    -- ^ IPv6 address
+         -> Int                   -- ^ Port number
+         -> DHTID                 -- ^ DHT ID
+         -> String                -- ^ Filepath with bootstrap nodes
+         -> IO DHT                -- ^ Return DHT structure (use exception?)
+startDHT v4 v6 port dht_id path = do
     dht <- makeDHT $ fromEnum (isJust v4) + fromEnum (isJust v6)
-    forkIO $ runDHT dht v4 v6 (fromIntegral port) dht_id path `finally` cleanupDHT dht
-    forkIO $ f dht
-
--- Clean up all memory associated with the DHT structure
-cleanupDHT :: DHT -> IO ()
-cleanupDHT dht = do
-    modifyMVar_ (searches dht) (\_ -> pure Map.empty) -- zero the map of searches
-    freeHaskellFunPtr $ callback dht
+    forkIO $ runDHT dht v4 v6 (fromIntegral port) dht_id path `onException` stopDHT dht
+    return dht
 
 -- |Stop the DHT and clear all channels on the DHT side
-stopDHT :: IO()
-stopDHT = ffi_stop_dht
+stopDHT :: DHT -> IO()
+stopDHT dht = do
+    ffi_stop_dht
+    modifyMVar_ (searches dht) (\_ -> pure Map.empty) -- zero the map of searches
+    freeHaskellFunPtr $ callback dht
 
 -- |Utility functions to create a socket IPv4
 makeSocket :: Maybe HostAddress -> Int -> IO (Maybe Socket)
@@ -209,11 +211,9 @@ search :: DHT       -- ^ DHT Instance
 search dht dst = do
     tchan <- newTChanIO
     ret <- ffi_search dst
-    case fromIntegral ret of
-        1 -> do
-            modifyMVar_ (searches dht) $ pure . Map.insert dst (tchan, 0)
-            return tchan
-        _ -> throw . Fail $ fromIntegral ret
+    when (fromIntegral ret < 0) $ throw . Fail $ fromIntegral ret
+    modifyMVar_ (searches dht) $ pure . Map.insert dst (tchan, 0)
+    return tchan
 
 -- |Callback from DHT
 ffiCallback :: DHT -> FFICallback
