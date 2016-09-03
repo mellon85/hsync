@@ -314,8 +314,6 @@ int ffi_run_dht(
     }
     pthread_mutex_unlock(&lock);
 
-    debugf("all socket closed\n");
-
     if (dht_uninit() < 0)
         return -2;
 
@@ -359,13 +357,10 @@ void ffi_search(const unsigned char* restrict id, short port, dht_callback callb
     assert(id != NULL);
     pthread_mutex_lock(&lock);
 
-    printf("fd4 search\n");
     if (fd4 >= 0)
-        dht_search(id, 0, AF_INET, callback, NULL);
-    printf("fd6 search\n");
+        dht_search(id, port, AF_INET, callback, NULL);
     if (fd6 >= 0)
-        dht_search(id, 0, AF_INET6, callback, NULL);
-    printf("unlock\n");
+        dht_search(id, port, AF_INET6, callback, NULL);
 
     pthread_mutex_unlock(&lock);
 }

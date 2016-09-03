@@ -245,8 +245,6 @@ search' dht dht_id port = do
 -- |Callback from DHT
 ffiCallback :: DHT -> FFICallback
 ffiCallback dht _ event hash addr len = do
-    putStrLn "callback called"
-    print event
     mchan <- withMVar (searches dht) $ return . Map.lookup hash
     maybe (return ()) (\(chan, count) ->
         case event of
