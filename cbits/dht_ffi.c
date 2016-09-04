@@ -55,11 +55,19 @@ static int load_with_file(FILE *f)
 {
     struct sockaddr_in* n4 = NULL;
     struct sockaddr_in6* n6 = NULL;
-    int header[2];
+    short header[2];
+
+    char intro;
+    if (fread(&intro, sizeof(char), 1, f) != 1) {
+        return -2;
+    }
+    if (intro != 0x01) {
+        return 0;
+    }
 
     /* read header with all the counts */
-    if (fread(&header, sizeof(int), 2, f) != 2) {
-        return -2;
+    if (fread(header, sizeof(*header), 2, f) != 2) {
+        return -3;
     }
 
     // header sanity checks
@@ -70,12 +78,12 @@ static int load_with_file(FILE *f)
     if (header[0] > 0) {
         n4 = (struct sockaddr_in*)malloc(sizeof(*n4)*header[0]);
         if (n4 == NULL) {
-            return -3;
+            return -4;
         }
         if (fread(n4, sizeof(*n4), header[0], f) != header[0]) {
             // failed to read the data
             free(n4);
-            return -4;
+            return -5;
         }
     }
 
@@ -83,20 +91,20 @@ static int load_with_file(FILE *f)
         n6 = (struct sockaddr_in6*)malloc(sizeof(*n6)*header[1]);
         if (n6 == NULL) {
             if (n4 != NULL) free(n4);
-            return -5;
+            return -6;
         }
         if (fread(n6, sizeof(*n6), header[1], f) != header[1])
         {   // failed to read the data
             if (n4 != NULL) free(n4);
             free(n6);
-            return -6;
+            return -7;
         }
     }
 
     pthread_mutex_lock(&lock);
-    debugf("header %d %d\n", nodes_4_count, nodes_6_count);
     nodes_4_count = header[0];
     nodes_6_count = header[1];
+    debugf("header %d %d\n", nodes_4_count, nodes_6_count);
 
     if (nodes_4) free(nodes_4);
     nodes_4 = n4;
@@ -127,19 +135,25 @@ static int save_with_file(FILE *f)
 
     dht_get_nodes(sin, &header[0], sin6, &header[1]);
 
+    const char intro = 0x01;
+    if (fwrite(&intro, sizeof(intro), 1, f) != 1) {
+        return -2;
+    }
+
     debugf("write head\n");
     if (fwrite(header, sizeof(*header), 2, f) != 2) {
-        return -2;
+        return -3;
     }
 
     debugf("write data\n");
     if (fwrite(sin, sizeof(*sin), header[0], f) != header[0]) {
-        return -3;
-    }
-    if (fwrite(sin6, sizeof(*sin6), header[1], f) != header[1]) {
         return -4;
     }
+    if (fwrite(sin6, sizeof(*sin6), header[1], f) != header[1]) {
+        return -5;
+    }
 
+    debugf("return : %d", header[0]+header[1]);
     return header[0]+header[1];
 }
 
@@ -309,7 +323,7 @@ int ffi_run_dht(
             buff[rc] = '\0';
             dht_periodic(buff, rc, (struct sockaddr*)&from, fromlen,
                               &estimated_time, callback, NULL);
-            debugf("Estimated time %d\n", estimated_time);
+            debugf("Estimated time %u\n", (unsigned int)estimated_time);
         }
     }
     pthread_mutex_unlock(&lock);

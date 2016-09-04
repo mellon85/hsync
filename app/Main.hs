@@ -10,7 +10,8 @@ main = do
     id <- D.generateID
     dht <- D.startDHT (Just 0) Nothing 4445 id
     putStrLn "started DHT"
-    D.conditionalBootstrap "nodes.dump"
+    n <- D.conditionalBootstrap "nodes.dump"
+    putStrLn $ "found "++show n++" nodes"
     putStrLn "bootstrap nodes sent"
 
     id <- D.generateID

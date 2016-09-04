@@ -86,8 +86,8 @@ foreign import ccall safe "ffi_get_nodes" ffi_get_nodes :: Ptr CInt -> Ptr CInt 
 foreign import ccall safe "ffi_add_node_4" ffi_add_node_4 :: Ptr () -> CShort -> IO ()
 foreign import ccall safe "ffi_add_node_6" ffi_add_node_6 :: Ptr () -> CShort -> IO ()
 
-foreign import ccall safe "ffi_load_bootstrap_nodes" ffi_load_bootstrap :: CString -> IO Int
-foreign import ccall safe "ffi_save_bootstrap_nodes" ffi_save_bootstrap :: CString -> IO Int
+foreign import ccall safe "ffi_load_bootstrap_nodes" ffi_load_bootstrap :: CString -> IO CInt
+foreign import ccall safe "ffi_save_bootstrap_nodes" ffi_save_bootstrap :: CString -> IO CInt
 
 foreign import ccall unsafe "ntohs" ntohs :: Word16 -> Word16
 
@@ -225,13 +225,13 @@ search :: DHT       -- ^ DHT Instance
        -> DHTID     -- ^ DHT ID to look for
        -> IO (TChan SearchResult) -- ^ new DHT structure and the channel to listen to
 search dht dst = search' dht dst 0
-    
+
 -- |Searches for the specific DHT ID
 announce :: DHT       -- ^ DHT Instance
        -> DHTID     -- ^ DHT ID to look for
        -> IO (TChan SearchResult) -- ^ new DHT structure and the channel to listen to
 announce dht dst = search' dht dst (announcePort dht)
-    
+
 search' :: DHT      -- ^ DHT Instance
        -> DHTID     -- ^ DHT ID to look for
        -> CShort    -- ^ port
@@ -325,24 +325,25 @@ addRemoteBootstrapNodes = do
 
 loadBootstrap :: String -> IO Int
 loadBootstrap path = do
-    r <- withCString path ffi_load_bootstrap
+    r <- fromIntegral <$> withCString path ffi_load_bootstrap
     when (fromIntegral r < 0) . throw $
         mkIOError userErrorType (show r++" Loading DHT bootstrap data") Nothing (Just path)
     return r
 
 saveBootstrap :: String -> IO Int
 saveBootstrap path = do
-    r <- withCString path ffi_save_bootstrap
+    r <- fromIntegral <$> withCString path ffi_save_bootstrap
     when (fromIntegral r < 0) . throw $
         mkIOError userErrorType (show r++" Saving DHT bootstrap data") Nothing (Just path)
     return r
 
-conditionalBootstrap :: String -> IO()
+conditionalBootstrap :: String -> IO Int
 conditionalBootstrap file = do
     exists <- doesFileExist file
     if exists
     then do
         n <- loadBootstrap "nodes.dump"
         when (n < 100) addRemoteBootstrapNodes
-    else addRemoteBootstrapNodes
+        return n
+    else addRemoteBootstrapNodes >> return 0
 
