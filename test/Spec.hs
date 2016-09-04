@@ -1,7 +1,7 @@
-import DHT
+import DB 
 
 
 main :: IO ()
 main = do
-    DHT.runTests
+    DB.runTests
     return ()
