@@ -7,17 +7,14 @@ module DB
      verify,
      upgrade,
      sqlSelectModtime,
-     runTests)
+     getVersion,
+     version)
     where
 
 import qualified Database.HDBC as HS
 import qualified Database.HDBC.Sqlite3 as HSD
 import Data.List
 import Control.Monad
-
--- testing
-import Test.QuickCheck
-import Test.QuickCheck.Monadic
 
 type Connection = HSD.Connection
 
@@ -79,28 +76,3 @@ setup c = do
 
 sqlSelectModtime :: HS.IConnection conn => conn -> IO HS.Statement
 sqlSelectModtime c = HS.prepare c "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"
-
--- Tests
-
-prop_SetupWorks = monadicIO $ do
-    v <- run $ do
-        db <- connect ":memory:"
-        setup db
-        r <- verify db
-        disconnect db
-        return r
-    assert v
-
-prop_getVersion = monadicIO $ do
-    v <- run $ do
-        db <- connect ":memory:"
-        setup db
-        v <- getVersion db
-        disconnect db
-        return v
-    assert $ v == version
-
--- TODO add fake datasets
-
-return []
-runTests = $quickCheckAll

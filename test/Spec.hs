@@ -1,7 +1,7 @@
-import DB 
+import qualified DBtest
 
 
 main :: IO ()
 main = do
-    DB.runTests
+    DBtest.runTests
     return ()
