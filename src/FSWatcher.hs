@@ -62,10 +62,18 @@ data IteratorConfiguration = IteratorConf {
         followSymlink :: Bool
     }
 
-iterateDirectory :: (Monad m, MonadIO m, HS.IConnection c) => String -> c -> Source m Entry
+-- | Iterate a path and given a Database connection will return all the modified
+-- entries.
+iterateDirectory :: (Monad m, MonadIO m, HS.IConnection c)
+    => FilePath         -- ^ Directory path
+    -> c                -- ^ Database connection
+    -> Source m Entry   -- ^ Conduit source
 iterateDirectory x c = do
     statement <- liftIO $ DB.sqlSelectModtime c
     runReaderC (IteratorConf statement False) (iterateDirectory' x)
+
+-- TODO should traverse the directory and the database at the same time to
+-- detect also deleted files.
 
 -- Internal directory iterator
 iterateDirectory' :: (Monad m, MonadIO m, MonadReader IteratorConfiguration m) => FilePath -> Source m Entry
@@ -76,13 +84,11 @@ iterateDirectory' x = do
         Left e -> yield . Right $ Error x e
         Right l -> mapM_ recurse l
     where
-        folder = showString x
-
         -- filter out special paths
         recurse "." = return ()
         recurse ".." = return ()
         recurse path = do
-            let final_path = folder . showString "/" $ path
+            let final_path = showString x. showString "/" $ path
             isDir <- liftIO $ doesDirectoryExist final_path
             isFile <- liftIO $ doesFileExist final_path
             test final_path isFile isDir
@@ -99,7 +105,12 @@ iterateDirectory' x = do
                     ret <- checkDate path t
                     unless ret . yield . Left $ Info path isDir t False Nothing
 
-checkDate :: (MonadIO m, MonadReader IteratorConfiguration m) => String -> UTCTime -> m Bool
+-- | Returns true if the path is newer that the informations stored in the
+-- database.
+checkDate :: (MonadIO m, MonadReader IteratorConfiguration m)
+    => FilePath     -- ^ Filepath
+    -> UTCTime      -- ^ Modification date
+    -> m Bool       -- ^ is newer?
 checkDate path time = do
     s <- ask
     liftIO $ HS.execute (sqlSearch s) [HS.SqlString $! path, HS.SqlUTCTime $! time]
@@ -147,9 +158,7 @@ testFS = do
     c <- DB.connect "test.db"
     DB.setup c
     b <- DB.verify c
-    if b
-    then do
-        iterateDirectory "." c =$ filterInfo =$ md5 $$ CL.mapM_ print
-        DB.disconnect c
-    else error "db corrupted"
+    when b $ error "db corrupted"
+    iterateDirectory "." c =$ filterInfo =$ md5 $$ CL.mapM_ print
+    DB.disconnect c
 
