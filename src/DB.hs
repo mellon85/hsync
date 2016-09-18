@@ -7,6 +7,7 @@ module DB
      verify,
      upgrade,
      sqlSelectModtime,
+     sqlInsertFile,
      getVersion,
      version)
     where
@@ -75,4 +76,9 @@ setup c = do
     return ()
 
 sqlSelectModtime :: HS.IConnection conn => conn -> IO HS.Statement
-sqlSelectModtime c = HS.prepare c "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"
+sqlSelectModtime c = HS.prepare c
+    "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"
+
+sqlInsertFile :: HS.IConnection conn => conn -> IO HS.Statement
+sqlInsertFile c = HS.prepare c
+    "INSERT INTO file (path, modificationTime, blob, md5) VALUES (?, ?, ?, ?)"

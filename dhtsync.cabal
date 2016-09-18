@@ -21,7 +21,7 @@ library
   c-sources: cbits/dht_ffi.c
   build-depends:       base >= 4.7 && < 5, cryptonite, memory, random, network,
        stm, mtl, time, text, directory >=1.2.2, array, bytestring, conduit,
-       HDBC, HDBC-sqlite3, containers, QuickCheck, iproute
+       HDBC, HDBC-sqlite3, containers, iproute
   default-language:    Haskell2010
 
 executable dht-sync
@@ -34,8 +34,9 @@ executable dht-sync
 test-suite test
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
+  other-modules:       DBtest, MyArbitrary
   main-is:             Spec.hs
-  build-depends:       base, dhtsync, QuickCheck, HDBC
+  build-depends:       base, dhtsync, QuickCheck, HDBC, time, bytestring, containers
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
 
