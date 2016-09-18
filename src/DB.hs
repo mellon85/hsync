@@ -16,6 +16,7 @@ import qualified Database.HDBC as HS
 import qualified Database.HDBC.Sqlite3 as HSD
 import Data.List
 import Control.Monad
+import Control.Exception
 
 type Connection = HSD.Connection
 
@@ -85,3 +86,20 @@ sqlSelectModtime c = HS.prepare c
 sqlInsertFile :: HS.IConnection conn => conn -> IO HS.Statement
 sqlInsertFile c = HS.prepare c
     "INSERT INTO file (path, modificationTime, blob, md5) VALUES (?, ?, ?, ?)"
+
+sqlSelectAllKnownPaths :: HS.IConnection conn => conn -> IO HS.Statement
+sqlSelectAllKnownPaths c = HS.prepare c "SELECT path FROM file SORT BY path"
+
+-- | Execute a safe SQL Transaction
+-- In case of error it will do a rollback, will execute a commit if there are no
+-- errors
+sqlTransaction :: HS.IConnection conn
+    => conn             -- ^ Connection
+    -> (conn -> IO a)   -- ^ Transaction function
+    -> IO a             -- ^ Result
+sqlTransaction c f =
+    bracketOnError
+        (HS.quickQuery c "BEGIN TRANSACTION" [])
+        (\_ -> HS.quickQuery c "ROLLBACK" [])
+        (\_ -> f c >>= (\x -> HS.quickQuery c "COMMIT" [] >> return x))
+
