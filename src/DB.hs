@@ -21,7 +21,10 @@ type Connection = HSD.Connection
 
 -- |Connect to the underlying SQL database
 connect :: FilePath -> IO HSD.Connection
-connect = HSD.connectSqlite3
+connect x = do
+    c <- HSD.connectSqlite3 x
+    HS.quickQuery c "PRAGMA journal_mode=WAL" []
+    return c
 
 disconnect :: (HS.IConnection a) => a -> IO ()
 disconnect = HS.disconnect
