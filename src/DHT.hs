@@ -29,7 +29,7 @@ module DHT
 import System.Directory
 import Control.Exception
 
-import Data.Word (Word16, Word32)
+import Data.Word (Word16, Word32, Word64)
 import Foreign.C.Types
 import Foreign.C.String
 import Foreign.Ptr
@@ -72,16 +72,28 @@ type FFICallback = CString  -- ^ closure
                 -> CUInt    -- ^ data length (16 bytes ip + 2 byte port network byte order)
                 -> IO ()
 
--- | Size (in bytes) of a DHT address
-dhtIDSize = 20
 
--- | Pointer representing the DHTID address
-type DHTID = Ptr CChar
+data DHTID = DHTID Word64 Word64 Word32
+    deriving (Eq, Ord)
+
+instance Storable DHTID where
+    sizeOf _ = 20
+    alignment _ = 8
+    peek p = do
+        a <- peekByteOff (castPtr p) 0
+        b <- peekByteOff (castPtr p) 8
+        c <- peekByteOff (castPtr p) 16
+        return $ DHTID a b c
+
+    poke p (DHTID a b c) =
+        pokeByteOff p 0  a >>
+        pokeByteOff p 8  b >>
+        pokeByteOff p 16 c
 
 foreign import ccall safe "ffi_run_dht" ffi_run_dht :: CInt -> CInt ->
-    DHTID -> FunPtr FFICallback -> IO CInt
+    Ptr CChar -> FunPtr FFICallback -> IO CInt
 foreign import ccall safe "ffi_stop_dht" ffi_stop_dht :: IO ()
-foreign import ccall safe "ffi_search" ffi_search :: DHTID -> CShort -> FunPtr FFICallback -> IO ()
+foreign import ccall safe "ffi_search" ffi_search :: Ptr CChar -> CShort -> FunPtr FFICallback -> IO ()
 foreign import ccall safe "ffi_get_nodes" ffi_get_nodes :: Ptr CInt -> Ptr CInt -> IO ()
 foreign import ccall safe "ffi_add_node_4" ffi_add_node_4 :: Ptr () -> CShort -> IO ()
 foreign import ccall safe "ffi_add_node_6" ffi_add_node_6 :: Ptr () -> CShort -> IO ()
@@ -146,11 +158,15 @@ runDHT :: DHT
        -> IO ()                 -- ^ Return DHT structure (use exception?)
 runDHT dht v4 v6 port dht_id = do
     fd4 <- makeSocket v4 port
+    dhtid <- malloc
+    poke dhtid dht_id
     r <- withPersistSocket fd4 (\fd4 -> do
         fd6 <- makeSocket6 v6 port
-        withPersistSocket fd6 (\fd6 ->
-            readMVar (callback dht) >>=
-                ffi_run_dht fd4 fd6 dht_id))
+        withPersistSocket fd6 (\fd6 -> do
+            dhtid <- malloc
+            poke dhtid dht_id
+            readMVar (callback dht) >>= \callback ->
+                ffi_run_dht fd4 fd6 (castPtr dhtid) callback))
 
     -- check r for exceptions
     when (fromIntegral r /= 0) $ throw . DHTFail $ fromIntegral r
@@ -162,7 +178,7 @@ makeDHT count port = do
             searches = entries,
             callback = cb,
             protoCount = count,
-            announcePort = fromIntegral $ port
+            announcePort = fromIntegral port
         }
         in do
         mkCallback (ffiCallback dht) >>= putMVar (callback dht)
@@ -175,13 +191,11 @@ startDHT :: Maybe HostAddress     -- ^ IPv4 address
          -> IO DHT                -- ^ Return DHT structure (use exception?)
 startDHT v4 v6 port dht_id = do
     dht <- makeDHT (fromEnum (isJust v4) + fromEnum (isJust v6)) port
-    -- TODO stopDHT should atomically free the callback!
-    -- or in case of exception during stop it does a double free
     forkIO $ runDHT dht v4 v6 (fromIntegral port) dht_id `onException` stopDHT dht
     return dht
 
 -- |Stop the DHT and clear all channels on the DHT side
-stopDHT :: DHT -> IO()
+stopDHT :: DHT -> IO ()
 stopDHT dht = do
     ffi_stop_dht
     modifyMVar_ (searches dht) (\_ -> pure Map.empty) -- zero the map of searches
@@ -215,10 +229,10 @@ withPersistSocket sock f = f (maybe (CInt $ negate 1) fdSocket sock) `onExceptio
 -- |Generates a random DHTID
 generateID :: IO DHTID
 generateID = do
-    ptr <- mallocArray dhtIDSize
-    -- fill ID with random data
-    Prelude.take dhtIDSize . randoms <$> getStdGen >>= pokeArray ptr
-    return ptr
+    a1 <- randomIO
+    a2 <- randomIO
+    a3 <- randomIO
+    return $ DHTID a1 a2 a3
 
 -- |Searches for the specific DHT ID
 search :: DHT       -- ^ DHT Instance
@@ -227,7 +241,7 @@ search :: DHT       -- ^ DHT Instance
 search dht dst = search' dht dst 0
 
 -- |Searches for the specific DHT ID
-announce :: DHT       -- ^ DHT Instance
+announce :: DHT     -- ^ DHT Instance
        -> DHTID     -- ^ DHT ID to look for
        -> IO (TChan SearchResult) -- ^ new DHT structure and the channel to listen to
 announce dht dst = search' dht dst (announcePort dht)
@@ -238,14 +252,21 @@ search' :: DHT      -- ^ DHT Instance
        -> IO (TChan SearchResult) -- ^ new DHT structure and the channel to listen to
 search' dht dht_id port = do
     tchan <- newTChanIO
-    forkIO $ readMVar (callback dht) >>= ffi_search dht_id port
+    forkIO $ do
+        dhtid <- malloc
+        poke dhtid dht_id
+        readMVar (callback dht) >>= ffi_search (castPtr dhtid) port
     modifyMVar_ (searches dht) $ pure . Map.insert dht_id (tchan, protoCount dht)
     return tchan
 
 -- |Callback from DHT
 ffiCallback :: DHT -> FFICallback
 ffiCallback dht _ event hash addr len = do
-    mchan <- withMVar (searches dht) $ return . Map.lookup hash
+    dht_id <- peek (castPtr hash)-- :: IO DHTID
+    ffiCallback' dht event dht_id addr len
+
+ffiCallback' dht event dht_id addr len = do
+    mchan <- withMVar (searches dht) $ return . Map.lookup dht_id
     maybe (return ()) (\(chan, count) ->
         case event of
             0 -> return () -- no event
@@ -273,11 +294,11 @@ ffiCallback dht _ event hash addr len = do
         receivedEnd chan count | count > 1 = decrease dht
                                | otherwise = do
                                     atomically . writeTChan chan $ End
-                                    modifyMVar_ (searches dht) (pure . Map.delete hash)
+                                    modifyMVar_ (searches dht) (pure . Map.delete dht_id)
 
         decrease dht = let
             decreaseElem = maybe Nothing (\(t,c) -> Just (t,c-1))
-            in modifyMVar_ (searches dht) (pure . Map.alter decreaseElem hash)
+            in modifyMVar_ (searches dht) (pure . Map.alter decreaseElem dht_id)
 
 -- |Wrapper to pass the callback function to the C layer
 foreign import ccall "wrapper"
