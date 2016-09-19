@@ -16,7 +16,6 @@ module FSWatcher (
         Error(..),
         filterErrors,
         filterInfo,
-        md5blocks,
         findDiffs,
         testFS
         ) where
@@ -34,7 +33,7 @@ import Data.Time.Clock
 import System.Directory
 import System.IO
 import System.IO.Error
-import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteString as BS
 import qualified Data.Conduit.List as CL
 import qualified Database.HDBC as HS
 
@@ -49,7 +48,8 @@ data Info = Info
         isDirectory :: Bool,
         modificationTime :: UTCTime,
         isSymlink :: Bool,
-        checksum :: Maybe (Digest MD5)
+        checksum :: Maybe (Digest MD5),
+        blocks :: Maybe [Digest MD5]
     } deriving (Show)
 
 data Error = Error {
@@ -61,6 +61,8 @@ data IteratorConfiguration = IteratorConf {
         sqlSearch :: HS.Statement,
         followSymlink :: Bool
     }
+
+dbHashBlockSize = 128*1024 :: Int64
 
 -- | Iterate a path and given a Database connection will return all the modified
 -- entries.
@@ -76,7 +78,9 @@ iterateDirectory x c = do
 -- detect also deleted files.
 
 -- Internal directory iterator
-iterateDirectory' :: (Monad m, MonadIO m, MonadReader IteratorConfiguration m) => FilePath -> Source m Entry
+iterateDirectory' :: (Monad m, MonadIO m, MonadReader IteratorConfiguration m)
+    => FilePath         -- ^ File path
+    -> Source m Entry   -- ^ Sources of Entry
 iterateDirectory' x = do
     send x True
     entries <- liftIO . tryIOError $ getDirectoryContents x
@@ -103,7 +107,7 @@ iterateDirectory' x = do
                 Left e -> yield $ Right (Error x e)
                 Right t -> do
                     ret <- checkDate path t
-                    unless ret . yield . Left $ Info path isDir t False Nothing
+                    unless ret . yield . Left $ Info path isDir t False Nothing Nothing
 
 -- | Returns true if the path is newer that the informations stored in the
 -- database.
@@ -130,22 +134,29 @@ md5 = awaitForever hashit
     where
         hashit x | isDirectory x = yield x
                  | otherwise     = do
-                    h <- liftIO . fmap hashlazy . BL.readFile $ entryPath x
-                    yield $ x { checksum = Just h }
+                    (h,b) <- liftIO $ withFile (entryPath x) ReadMode $ \handle ->
+                        md5hash dbHashBlockSize handle
+                    yield $ x { checksum = Just h, blocks = Just b }
 
 {-
  - Given a block size, an input ByteString and a Digest type return a serie of
  - block's checksums
  -}
-hashblocks :: (Monad m, HashAlgorithm d) => Int64 -> BL.ByteString -> Source m (Digest d)
-hashblocks s = loop
+hashblocks :: (HashAlgorithm d)
+    => Int64                      -- ^ Block size
+    -> Handle                     -- ^ Input file
+    -> IO (Digest d, [Digest d])  -- ^ Source definition
+hashblocks size h = (\(a,b) -> (hashFinalize a, b [])) <$> loop h (hashInit, id)
     where
-        loop ba = do
-            let (b, b') = BL.splitAt s ba
-            yield (hashlazy b) >> loop b'
+        loop h (ctx, blocks) = do
+            eof <- hIsEOF h
+            if eof
+            then return (ctx, blocks)
+            else BS.hGet h (fromIntegral dbHashBlockSize) >>= \block ->
+                    return (hashUpdate ctx block, blocks . (hash block :))
 
-md5blocks :: (Monad m) => Int64 -> BL.ByteString -> Source m (Digest MD5)
-md5blocks = hashblocks
+md5hash :: Int64 -> Handle -> IO (Digest MD5, [Digest MD5])
+md5hash = hashblocks
 
 -- Finds element that are different between the two sources
 -- Usually one source is the local database, the other one is the current status
