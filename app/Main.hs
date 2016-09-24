@@ -8,7 +8,7 @@ main :: IO ()
 main = do
     putStrLn "starting"
     id <- D.generateID
-    dht <- D.startDHT (Just 0) Nothing 4445 id
+    (dht, v4, v6) <- D.startDHT (Just 0) Nothing 4445 id
     putStrLn "started DHT"
     n <- D.conditionalBootstrap "nodes.dump"
     putStrLn $ "found "++show n++" nodes"

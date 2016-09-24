@@ -151,18 +151,16 @@ instance Exception DHTException
 -- |Runs the DHT and returns an error code (0 means everything's ok)
 -- Return an exception from an error code
 runDHT :: DHT
-       -> Maybe HostAddress     -- ^ IPv4 address
-       -> Maybe HostAddress6    -- ^ IPv6 address
+       -> Maybe Socket          -- ^ IPv4 address
+       -> Maybe Socket          -- ^ IPv6 address
        -> Int                   -- ^ Port number
        -> DHTID                 -- ^ DHT ID
        -> IO ()                 -- ^ Return DHT structure (use exception?)
 runDHT dht v4 v6 port dht_id = do
-    fd4 <- makeSocket v4 port
     dhtid <- malloc
     poke dhtid dht_id
-    r <- withPersistSocket fd4 (\fd4 -> do
-        fd6 <- makeSocket6 v6 port
-        withPersistSocket fd6 (\fd6 -> do
+    r <- withPersistSocket v4 (\fd4 -> do
+        withPersistSocket v6 (\fd6 -> do
             dhtid <- malloc
             poke dhtid dht_id
             readMVar (callback dht) >>= \callback ->
@@ -188,11 +186,13 @@ startDHT :: Maybe HostAddress     -- ^ IPv4 address
          -> Maybe HostAddress6    -- ^ IPv6 address
          -> Int                   -- ^ Port number
          -> DHTID                 -- ^ DHT ID
-         -> IO DHT                -- ^ Return DHT structure (use exception?)
+         -> IO (DHT, Maybe Socket, Maybe Socket) -- ^ Return DHT structure (use exception?)
 startDHT v4 v6 port dht_id = do
     dht <- makeDHT (fromEnum (isJust v4) + fromEnum (isJust v6)) port
-    forkIO $ runDHT dht v4 v6 (fromIntegral port) dht_id `onException` stopDHT dht
-    return dht
+    fd4 <- makeSocket v4 port
+    fd6 <- makeSocket6 v6 port
+    forkIO $ runDHT dht fd4 fd6 (fromIntegral port) dht_id `onException` stopDHT dht
+    return (dht, fd4, fd6)
 
 -- |Stop the DHT and clear all channels on the DHT side
 stopDHT :: DHT -> IO ()
