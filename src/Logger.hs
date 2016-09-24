@@ -1,5 +1,7 @@
 {-# LANGUAGE CPP, GeneralizedNewtypeDeriving, FlexibleInstances #-}
 
+-- TODO should use IORef.. switch to a proper logging library
+
 --- {-# LANGUAGE UndecidableInstances #-}
 
 -- use an MVar to replace the logfile synchronous with the processing
