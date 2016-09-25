@@ -15,20 +15,20 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     DHT, DB, FSWatcher, Logger
+  exposed-modules:     DHT, DB, FSWatcher, Server, Logger
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   cc-options: -O2
   c-sources: cbits/dht_ffi.c
   build-depends:       base >= 4.7 && < 5, cryptonite, memory, random, network,
        stm, mtl, time, text, directory >=1.2.2, array, bytestring, conduit,
-       HDBC, HDBC-sqlite3, containers, iproute
+       HDBC, HDBC-sqlite3, containers, iproute, hslogger
   default-language:    Haskell2010
 
 executable dht-sync
   hs-source-dirs:      app
   main-is:             Main.hs
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
-  build-depends:       base, dhtsync
+  build-depends:       base, dhtsync, hslogger
   default-language:    Haskell2010
 
 test-suite test
