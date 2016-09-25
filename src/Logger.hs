@@ -3,6 +3,9 @@ module Logger
     ,closeLogger
     ,rootLogger
     ,infoM
+    ,warningM
+    ,debugM
+    ,errorM
     ) where
 
 import System.Log.Logger
