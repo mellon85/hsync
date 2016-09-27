@@ -64,6 +64,12 @@ import Data.ByteArray as BA
 import Control.Concurrent.STM.TChan
 import Control.Concurrent.MVar
 
+import Numeric
+
+import Logger
+
+logModule = "DHT"
+
 -- | Callback for receiving data from the DHT C implementation
 type FFICallback = CString  -- ^ closure
                 -> CInt     -- ^ event
@@ -89,6 +95,9 @@ instance Storable DHTID where
         pokeByteOff p 0  a >>
         pokeByteOff p 8  b >>
         pokeByteOff p 16 c
+
+instance Show DHTID where
+    show (DHTID a b c) = showHex a . showHex b . showHex c $ ""
 
 foreign import ccall safe "ffi_run_dht" ffi_run_dht :: CInt -> CInt ->
     Ptr CChar -> FunPtr FFICallback -> IO CInt
@@ -360,11 +369,15 @@ saveBootstrap path = do
 
 conditionalBootstrap :: String -> IO Int
 conditionalBootstrap file = do
+    debugM logModule $ "Check bootstrap file "++file
     exists <- doesFileExist file
+    debugM logModule $ "Exists? "++show exists
     if exists
     then do
+        debugM logModule "Loading bootstrap nodes from file"
         n <- loadBootstrap "nodes.dump"
         when (n < 100) addRemoteBootstrapNodes
+        debugM logModule $ "found " ++ show n ++ " nodes"
         return n
     else addRemoteBootstrapNodes >> return 0
 
