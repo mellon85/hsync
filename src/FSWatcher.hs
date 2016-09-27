@@ -132,17 +132,22 @@ filterErrors = awaitForever $ either (\_ -> return()) yield
 filterInfo :: (Monad m, MonadIO m) => Conduit Entry m Info
 filterInfo = awaitForever $ either yield (\_ -> return())
 
-md5 :: (Monad m, MonadIO m) => Conduit Info m Info
+md5 :: (Monad m, MonadIO m) => Conduit Entry m Entry
 md5 = awaitForever hashit
     where
-        hashit x | isDirectory x = yield x
-                 | otherwise     = do
-                    (h,b) <- liftIO $ withFile (entryPath x) ReadMode $ \handle ->
-                        md5hash dbHashBlockSize handle
-                    yield $ x { checksum = Just h, blocks = Just b }
+        hashit (Right x) = yield (Right x)
+        hashit (Left x) | isDirectory x = yield . Left $ x
+                        | otherwise     = liftIO (foo x) >>= yield
 
-{-
- - Given a block size, an input ByteString and a Digest type return a serie of
+        foo :: Info -> IO Entry
+        foo x = withFile (entryPath x) ReadMode (bar x) `catch`
+            (return . Right . Error (entryPath x))
+
+        bar x handle = do
+            (h,b) <- md5hash dbHashBlockSize handle
+            return . Left $ x { checksum = Just h, blocks = Just b }
+
+{- Given a block size, an input ByteString and a Digest type return a serie of
  - block's checksums
  -}
 hashblocks :: (HashAlgorithm d)
@@ -164,15 +169,15 @@ md5hash = hashblocks
 -- Finds element that are different between the two sources
 -- Usually one source is the local database, the other one is the current status
 findDiffs :: (Eq o, Monad m) => Source m o -> Source m o -> Source m (Bool, o, o)
-findDiffs s1 s2 = sequenceSources [s1, s2] $= awaitForever inner
-    where
-        inner [a,b] = yield (a==b, a, b)
+findDiffs s1 s2 =
+    sequenceSources [s1, s2] $= awaitForever (\[a,b] -> yield (a==b, a, b))
 
 testFS = do
     c <- DB.connect "test.db"
     DB.setup c
     b <- DB.verify c
-    when b $ error "db corrupted"
-    iterateDirectory "." c =$ filterInfo =$ md5 $$ CL.mapM_ print
+    unless b $ error "db corrupted"
+    -- should not use filterInfo, hashing can change an Info to an Error
+    iterateDirectory "." c =$ {- filterInfo =$ -} md5 $$ CL.mapM_ (debugM logModule . show)
     DB.disconnect c
 
