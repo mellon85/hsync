@@ -5,6 +5,7 @@ import Control.Concurrent
 import Control.Monad
 
 import Logger
+import FSWatcher
 
 logModule = rootLogger
 
@@ -26,6 +27,8 @@ main = do
 
     infoM logModule $ "found "++show n++" nodes"
     infoM logModule "bootstrap nodes sent"
+
+    forkIO testFS
 
     test dht
     test dht
