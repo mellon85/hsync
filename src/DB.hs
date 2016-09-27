@@ -18,7 +18,11 @@ import Data.List
 import Control.Monad
 import Control.Exception
 
+import Logger
+
 type Connection = HSD.Connection
+
+logModule = "DB"
 
 -- |Connect to the underlying SQL database
 connect :: FilePath -> IO HSD.Connection
@@ -51,10 +55,13 @@ setupSQL = intercalate "\n" [
 
 verify :: (HS.IConnection a) => a -> IO Bool
 verify c = do
+    debugM logModule "Fetch tables"
     s <- HS.prepare c "SELECT name FROM sqlite_master WHERE type='table'"
     HS.execute s []
     tables <- (map HS.fromSql . concat <$> HS.fetchAllRows s) :: IO [String]
+    debugM logModule $ "Found tables " ++ show tables
     let all_tables_there = elem "file" tables && elem "schema_info" tables
+    debugM logModule $ "All tables: " ++ show all_tables_there
     return $! all_tables_there
 
 -- Upgrades the schema

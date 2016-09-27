@@ -10,13 +10,14 @@ logModule = rootLogger
 
 test dht = do
     id <- D.generateID
+    debugM logModule $ show id
     t <- D.search dht id
     threadDelay 20000000
-    D.nodes >>= print
+    D.nodes >>= debugM logModule . show
 
 main :: IO ()
 main = do
-    setupLogger
+    setupLogger DEBUG
 
     id <- D.generateID
     dht <- D.startDHT (Just 0) Nothing 4445 id

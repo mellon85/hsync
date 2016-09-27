@@ -6,6 +6,7 @@ module Logger
     ,warningM
     ,debugM
     ,errorM
+    ,Priority(DEBUG, INFO, ERROR)
     ) where
 
 import System.Log.Logger
@@ -13,14 +14,14 @@ import qualified System.Log.Handler as LH
 import System.Log.Handler.Simple
 import System.Log.Formatter (simpleLogFormatter)
 
-setupLogger :: IO ()
-setupLogger = do
+setupLogger :: Priority -> IO ()
+setupLogger prio = do
     fileLog <- fileHandler "dht-sync.log" DEBUG >>= \lh ->
         return $ LH.setFormatter lh $
                 simpleLogFormatter "$utcTime <$loggername> $tid [$prio] $msg"
     updateGlobalLogger "" removeHandler
     updateGlobalLogger "" $ addHandler fileLog
-    updateGlobalLogger "" $ setLevel DEBUG
+    updateGlobalLogger "" $ setLevel prio
     debugM rootLogger "Started logging"
 
 closeLogger :: IO ()

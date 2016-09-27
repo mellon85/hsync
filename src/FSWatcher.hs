@@ -38,6 +38,9 @@ import qualified Data.Conduit.List as CL
 import qualified Database.HDBC as HS
 
 import qualified DB
+import Logger
+
+logModule = "FSW"
 
 -- Type returned from a Conduit looking for all files an directories
 type Entry = Either Info Error
