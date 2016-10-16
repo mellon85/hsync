@@ -171,15 +171,27 @@ runDHT :: DHT
 runDHT dht v4 v6 port dht_id = runResourceT $ do
     dhtid <- liftIO malloc
     liftIO $ poke dhtid dht_id
-    (_, (_, fd4)) <- allocate (liftIO $ makeSocket4 port v4) closeSock
-    (_, (_, fd6)) <- allocate (liftIO $ makeSocket6 port v6) closeSock
+    (_, s4) <- allocate (liftIO $ socket AF_INET Datagram defaultProtocol) close
+    (_, s6) <- allocate (liftIO $ socket AF_INET6 Datagram defaultProtocol) close
+    fd4 <- liftIO $ makeSocket4 s4 port v4
+    fd6 <- liftIO $ makeSocket6 s6 port v6
     callback <- liftIO $ readMVar (callback dht)
     r <- liftIO $ ffi_run_dht fd4 fd6 (castPtr dhtid) callback
 
     -- check r for exceptions
     when (fromIntegral r /= 0) $ throw . DHTFail $ fromIntegral r
     where
-        closeSock = maybe (return ()) close . fst
+        nullSocket = return . CInt $ negate 1
+
+        makeSocket4 sock port = maybe nullSocket $ \host -> do
+            bind sock $ SockAddrInet (fromIntegral port) host
+            return $ fdSocket sock
+
+        makeSocket6 sock port = maybe nullSocket $ \host -> do
+            bind sock $ SockAddrInet6 (fromIntegral port) 0 host 0
+            return $ fdSocket sock
+
+
 
 makeDHT count port = do
     entries <- newMVar Map.empty
@@ -212,25 +224,6 @@ stopDHT dht = do
     cb <- tryTakeMVar (callback dht)
     return $ freeHaskellFunPtr <$> cb
     return ()
-
--- |Utility functions to create a socket IPv4
-makeSocket4 :: Int -> Maybe HostAddress -> IO (Maybe Socket, CInt)
-makeSocket4 port = maybe nullSocket (\host -> do
-    sock <- socket AF_INET Datagram defaultProtocol
-    bind sock (SockAddrInet (fromIntegral port) host) `onException`
-        close sock >> nullSocket
-    return (Just sock, fdSocket sock))
-
--- |Utility functions to create a socket IPv6
-makeSocket6 :: Int -> Maybe HostAddress6 -> IO (Maybe Socket, CInt)
-makeSocket6 port = maybe nullSocket (\host -> do
-    sock <- socket AF_INET6 Datagram defaultProtocol
-    bind sock (SockAddrInet6 (fromIntegral port) 0 host 0) `onException`
-        close sock >> nullSocket
-    return (Just sock, fdSocket sock))
-
-nullSocket :: (Monad m) => m (Maybe Socket, CInt)
-nullSocket = return (Nothing, CInt $! negate 1)
 
 -- |Generates a random DHTID
 generateID :: IO DHTID
