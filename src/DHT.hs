@@ -53,6 +53,9 @@ import Data.Maybe (isJust)
 import Data.Bits (shiftR, shiftL, (.&.))
 import System.IO.Error
 
+import Control.Monad.Trans.Resource
+import Control.Monad.IO.Class (liftIO)
+
 -- Network
 import Network.Socket
 
@@ -165,20 +168,18 @@ runDHT :: DHT
        -> Int                   -- ^ Port number
        -> DHTID                 -- ^ DHT ID
        -> IO ()                 -- ^ Return DHT structure (use exception?)
-runDHT dht v4 v6 port dht_id = do
-    fd4 <- makeSocket v4 port
-    dhtid <- malloc
-    poke dhtid dht_id
-    r <- withPersistSocket fd4 (\fd4 -> do
-        fd6 <- makeSocket6 v6 port
-        withPersistSocket fd6 (\fd6 -> do
-            dhtid <- malloc
-            poke dhtid dht_id
-            readMVar (callback dht) >>= \callback ->
-                ffi_run_dht fd4 fd6 (castPtr dhtid) callback))
+runDHT dht v4 v6 port dht_id = runResourceT $ do
+    dhtid <- liftIO malloc
+    liftIO $ poke dhtid dht_id
+    (_, (_, fd4)) <- allocate (liftIO $ makeSocket4 port v4) closeSock
+    (_, (_, fd6)) <- allocate (liftIO $ makeSocket6 port v6) closeSock
+    callback <- liftIO $ readMVar (callback dht)
+    r <- liftIO $ ffi_run_dht fd4 fd6 (castPtr dhtid) callback
 
     -- check r for exceptions
     when (fromIntegral r /= 0) $ throw . DHTFail $ fromIntegral r
+    where
+        closeSock = maybe (return ()) close . fst
 
 makeDHT count port = do
     entries <- newMVar Map.empty
@@ -213,27 +214,23 @@ stopDHT dht = do
     return ()
 
 -- |Utility functions to create a socket IPv4
-makeSocket :: Maybe HostAddress -> Int -> IO (Maybe Socket)
-makeSocket Nothing port = return Nothing
-makeSocket (Just host) port = do
+makeSocket4 :: Int -> Maybe HostAddress -> IO (Maybe Socket, CInt)
+makeSocket4 port = maybe nullSocket (\host -> do
     sock <- socket AF_INET Datagram defaultProtocol
-    bind sock $ SockAddrInet (fromIntegral port) host
-    return $ Just sock
+    bind sock (SockAddrInet (fromIntegral port) host) `onException`
+        close sock >> nullSocket
+    return (Just sock, fdSocket sock))
 
 -- |Utility functions to create a socket IPv6
-makeSocket6 :: Maybe HostAddress6 -> Int -> IO (Maybe Socket)
-makeSocket6 Nothing port = return Nothing
-makeSocket6 (Just host) port = do
+makeSocket6 :: Int -> Maybe HostAddress6 -> IO (Maybe Socket, CInt)
+makeSocket6 port = maybe nullSocket (\host -> do
     sock <- socket AF_INET6 Datagram defaultProtocol
-    bind sock $ SockAddrInet6 (fromIntegral port) 0 host 0
-    return $ Just sock
+    bind sock (SockAddrInet6 (fromIntegral port) 0 host 0) `onException`
+        close sock >> nullSocket
+    return (Just sock, fdSocket sock))
 
--- |Executes an action on the filedescriptor of the Socket
--- As the dht is owning the sockets the caller has to close them only in case of
--- an exception.
-withPersistSocket :: Maybe Socket -> (CInt -> IO a) -> IO a
-withPersistSocket sock f = f (maybe (CInt $ negate 1) fdSocket sock) `onException`
-    maybe (return ()) close sock
+nullSocket :: (Monad m) => m (Maybe Socket, CInt)
+nullSocket = return (Nothing, CInt $! negate 1)
 
 -- |Generates a random DHTID
 generateID :: IO DHTID
