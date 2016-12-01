@@ -11,11 +11,8 @@
 
 module FSWatcher (
         iterateDirectory,
-        Entry,
-        Info(..),
-        Error(..),
+        Entry(..),
         filterErrors,
-        filterInfo,
         findDiffs,
         testFS
         ) where
@@ -42,23 +39,35 @@ import Logger
 
 logModule = "FSW"
 
--- Type returned from a Conduit looking for all files an directories
-type Entry = Either Info Error
+type FileDigest = Digest MD5
 
-data Info = Info
-    {
+-- Type returned from a Conduit looking for all files an directories
+data Entry = File {
         entryPath :: String,
-        isDirectory :: Bool,
+        modificationTime :: UTCTime,
+        isSymlink :: Bool
+    }
+           | ChecksumFile {
+        entryPath :: String,
         modificationTime :: UTCTime,
         isSymlink :: Bool,
-        checksum :: Maybe (Digest MD5),
-        blocks :: Maybe [Digest MD5]
-    } deriving (Show)
-
-data Error = Error {
+        checksum :: FileDigest,
+        blocks :: [FileDigest]
+    }
+           | Directory {
+        entryPath :: String,
+        modificationTime :: UTCTime,
+        isSymlink :: Bool
+   }
+           | Error {
         errorPath :: String,
         exception :: IOException
-    } deriving (Show)
+    }
+    deriving (Show)
+
+addChecksum :: Entry -> FileDigest -> [FileDigest] -> Entry
+addChecksum (File a b c) total blocks = ChecksumFile a b c total blocks
+addChecksum _ _ _ = error "Add Checksum to wrong entry type"
 
 data IteratorConfiguration = IteratorConf {
         sqlSearch :: HS.Statement,
@@ -88,7 +97,7 @@ iterateDirectory' x = do
     send x True
     entries <- liftIO . tryIOError $ getDirectoryContents x
     case entries of
-        Left e -> yield . Right $ Error x e
+        Left e -> yield $ Error x e
         Right l -> mapM_ recurse l
     where
         -- filter out special paths
@@ -107,10 +116,13 @@ iterateDirectory' x = do
         send path isDir = do
             modTime <- liftIO . tryIOError $ getModificationTime path
             case modTime of
-                Left e -> yield $ Right (Error x e)
+                Left e -> yield $ Error x e
                 Right t -> do
                     ret <- checkDate path t
-                    unless ret . yield . Left $ Info path isDir t False Nothing Nothing
+                    unless ret . yield $ File path t False
+            where
+                make | isDir     = Directory
+                     | otherwise = File
 
 -- | Returns true if the path is newer that the informations stored in the
 -- database.
@@ -124,28 +136,25 @@ checkDate path time = do
     m <- liftIO . HS.fetchRow .sqlSearch $ s
     return . isJust $ m
 
-filterErrors :: (Monad m, MonadIO m) => Conduit Entry m Error
-filterErrors = awaitForever $ either (\_ -> return()) yield
-
--- given entries as input filters out which we don't need to examine and all the
--- errors.
-filterInfo :: (Monad m, MonadIO m) => Conduit Entry m Info
-filterInfo = awaitForever $ either yield (\_ -> return())
+filterErrors :: (Monad m, MonadIO m) => Conduit Entry m Entry
+filterErrors = awaitForever match
+    where
+        match x@Error{} = yield x
+        match _ = return ()
 
 md5 :: (Monad m, MonadIO m) => Conduit Entry m Entry
 md5 = awaitForever hashit
     where
-        hashit (Right x) = yield (Right x)
-        hashit (Left x) | isDirectory x = yield . Left $ x
-                        | otherwise     = liftIO (foo x) >>= yield
+        hashit f@File{} = liftIO (foo f) >>= yield
+        hashit x = yield x
 
-        foo :: Info -> IO Entry
-        foo x = withFile (entryPath x) ReadMode (bar x) `catch`
-            (return . Right . Error (entryPath x))
+        foo :: Entry -> IO Entry
+        foo x = withFile (entryPath x) ReadMode (hash x) `catch`
+            (return . Error (entryPath x))
 
-        bar x handle = do
+        hash x handle = do
             (h,b) <- md5hash dbHashBlockSize handle
-            return . Left $ x { checksum = Just h, blocks = Just b }
+            return $ addChecksum x h b
 
 {- Given a block size, an input ByteString and a Digest type return a serie of
  - block's checksums
@@ -163,7 +172,7 @@ hashblocks size h = (\(a,b) -> (hashFinalize a, b [])) <$> loop h (hashInit, id)
             else BS.hGet h (fromIntegral dbHashBlockSize) >>= \block ->
                     return (hashUpdate ctx block, blocks . (hash block :))
 
-md5hash :: Int64 -> Handle -> IO (Digest MD5, [Digest MD5])
+md5hash :: Int64 -> Handle -> IO (FileDigest, [FileDigest])
 md5hash = hashblocks
 
 -- Finds element that are different between the two sources
