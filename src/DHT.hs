@@ -330,6 +330,7 @@ bootstrapNodes = [
     ("router.utorrent.com", 6881),
     ("dht.transmissionbt.com", 6881)]
 
+-- TODO without connection or DNS failures there is an exception at getAddrInfo
 addRemoteBootstrapNodes :: IO ()
 addRemoteBootstrapNodes = do
     addresses <- mapM getBootstrapNodes bootstrapNodes
