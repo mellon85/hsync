@@ -142,8 +142,8 @@ filterErrors = awaitForever match
         match x@Error{} = yield x
         match _ = return ()
 
-md5 :: (Monad m, MonadIO m) => Conduit Entry m Entry
-md5 = awaitForever hashit
+hashEntry :: (Monad m, MonadIO m) => Conduit Entry m Entry
+hashEntry = awaitForever hashit
     where
         hashit f@File{} = liftIO (foo f) >>= yield
         hashit x = yield x
@@ -153,10 +153,11 @@ md5 = awaitForever hashit
             (return . Error (entryPath x))
 
         hash x handle = do
-            (h,b) <- md5hash dbHashBlockSize handle
+            (h,b) <- hashblocks dbHashBlockSize handle
             return $ addChecksum x h b
 
-{- Given a block size, an input ByteString and a Digest type return a serie of
+{-
+ - Given a block size, an input ByteString and a Digest type return a serie of
  - block's checksums
  -}
 hashblocks :: (HashAlgorithm d)
@@ -172,9 +173,6 @@ hashblocks size h = (\(a,b) -> (hashFinalize a, b [])) <$> loop h (hashInit, id)
             else BS.hGet h (fromIntegral dbHashBlockSize) >>= \block ->
                     return (hashUpdate ctx block, blocks . (hash block :))
 
-md5hash :: Int64 -> Handle -> IO (FileDigest, [FileDigest])
-md5hash = hashblocks
-
 -- Finds element that are different between the two sources
 -- Usually one source is the local database, the other one is the current status
 findDiffs :: (Eq o, Monad m) => Source m o -> Source m o -> Source m (Bool, o, o)
@@ -187,6 +185,6 @@ testFS = do
     b <- DB.verify c
     unless b $ error "db corrupted"
     -- should not use filterInfo, hashing can change an Info to an Error
-    iterateDirectory "." c =$ {- filterInfo =$ -} md5 $$ CL.mapM_ (debugM logModule . show)
+    iterateDirectory "." c =$ hashEntry $$ CL.mapM_ (debugM logModule . show)
     DB.disconnect c
 
