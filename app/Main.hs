@@ -23,7 +23,7 @@ main = do
     id <- D.generateID
     dht <- D.startDHT (Just 0) Nothing 4445 id
     infoM logModule "started DHT"
-    n <- D.conditionalBootstrap "nodes.dump"
+    n <- D.bootstrap "nodes.dump"
 
     infoM logModule $ "found "++show n++" nodes"
     infoM logModule "bootstrap nodes sent"

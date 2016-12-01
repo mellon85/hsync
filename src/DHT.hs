@@ -20,10 +20,9 @@ module DHT
       announce,
       nodes,
       addNode,
-      loadBootstrap,
       saveBootstrap,
       addRemoteBootstrapNodes,
-      conditionalBootstrap
+      bootstrap
     ) where
 
 import System.Directory
@@ -343,12 +342,6 @@ addRemoteBootstrapNodes = do
         addSockAddr (SockAddrInet _ addr) = addHostAddress addr
         addSockAddr (SockAddrInet6 _ addr _ _) = addHostAddress6 addr
 
-loadBootstrap :: String -> IO Int
-loadBootstrap path = do
-    r <- fromIntegral <$> withCString path ffi_load_bootstrap
-    when (fromIntegral r < 0) . throw $
-        mkIOError userErrorType (show r++" Loading DHT bootstrap data") Nothing (Just path)
-    return r
 
 saveBootstrap :: String -> IO Int
 saveBootstrap path = do
@@ -357,8 +350,8 @@ saveBootstrap path = do
         mkIOError userErrorType (show r++" Saving DHT bootstrap data") Nothing (Just path)
     return r
 
-conditionalBootstrap :: String -> IO Int
-conditionalBootstrap file = do
+bootstrap :: String -> IO Int
+bootstrap file = do
     debugM logModule $ "Check bootstrap file "++file
     exists <- doesFileExist file
     debugM logModule $ "Exists? "++show exists
@@ -370,4 +363,11 @@ conditionalBootstrap file = do
         debugM logModule $ "found " ++ show n ++ " nodes"
         return n
     else addRemoteBootstrapNodes >> return 0
+    where
+        loadBootstrap :: String -> IO Int
+        loadBootstrap path = do
+            r <- fromIntegral <$> withCString path ffi_load_bootstrap
+            when (fromIntegral r < 0) . throw $
+                mkIOError userErrorType (show r++" Loading DHT bootstrap data") Nothing (Just path)
+            return r
 
