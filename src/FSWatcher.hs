@@ -181,8 +181,17 @@ hashblocks size h = (\(a,b) -> (hashFinalize a, b [])) <$> loop h (hashInit, id)
 -- Finds element that are different between the two sources
 -- Usually one source is the local database, the other one is the current status
 findDiffs :: (Eq o, Monad m) => Source m o -> Source m o -> Source m (Bool, o, o)
-findDiffs s1 s2 =
-    sequenceSources [s1, s2] $= awaitForever (\[a,b] -> yield (a==b, a, b))
+findDiffs s1 s2 = do
+    rs1 <- newResumableSource s1
+    rs2 <- newResumableSource s2
+    -- get first elements from both
+    v1 <- lift $ rs1 $$++ await
+    v2 <- lift $ rs2 $$++ await
+    recurse v1 v2
+    where
+        -- TODO do all the cases and tail recursively yield the differences
+        recurse (rs1, a) (rs2, b) = do
+            return ()
 
 testFS = do
     c <- DB.connect "test.db"
