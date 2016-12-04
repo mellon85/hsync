@@ -41,6 +41,9 @@ logModule = "FSW"
 
 type FileDigest = Digest MD5
 
+-- placeholder, linux will have to identify it
+symlink _ = False
+
 -- Type returned from a Conduit looking for all files an directories
 data Entry = File {
         entryPath :: String,
@@ -119,7 +122,7 @@ iterateDirectory' x = do
                 Left e -> yield $ Error x e
                 Right t -> do
                     ret <- checkDate path t
-                    unless ret . yield $ File path t False
+                    unless ret . yield $ make path t (symlink path)
             where
                 make | isDir     = Directory
                      | otherwise = File
