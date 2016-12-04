@@ -107,7 +107,7 @@ iterateDirectory' x = do
         recurse "." = return ()
         recurse ".." = return ()
         recurse path = do
-            let final_path = showString x. showString "/" $ path
+            let final_path = showString x . showString "/" $ path
             isDir <- liftIO $ doesDirectoryExist final_path
             isFile <- liftIO $ doesFileExist final_path
             test final_path isFile isDir
@@ -116,10 +116,12 @@ iterateDirectory' x = do
                                | isFile          = send dest False
                                | isDir           = iterateDirectory' dest
 
+        -- Send will read the modification date. If not possible will mark
+        -- the Entry as error
         send path isDir = do
             modTime <- liftIO . tryIOError $ getModificationTime path
             case modTime of
-                Left e -> yield $ Error x e
+                Left e -> yield $ Error path e
                 Right t -> do
                     ret <- checkDate path t
                     unless ret . yield $ make path t (symlink path)

@@ -21,6 +21,7 @@ main = do
     setupLogger DEBUG
 
     id <- D.generateID
+    infoM logModule "starting DHT"
     dht <- D.startDHT (Just 0) Nothing 4445 id
     infoM logModule "started DHT"
     n <- D.bootstrap "nodes.dump"
