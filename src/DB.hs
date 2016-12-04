@@ -28,7 +28,8 @@ logModule = "DB"
 connect :: FilePath -> IO HSD.Connection
 connect x = do
     c <- HSD.connectSqlite3 x
-    --HS.quickQuery c "PRAGMA journal_mode=WAL" []
+    HS.quickQuery c "PRAGMA encoding = \"UTF-8\";" []
+    --HS.quickQuery c "PRAGMA journal_mode=WAL;" []
     return c
 
 disconnect :: (HS.IConnection a) => a -> IO ()
