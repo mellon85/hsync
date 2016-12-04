@@ -45,8 +45,8 @@ setupSQL = intercalate "\n" [
     "CREATE TABLE IF NOT EXISTS file (",
     " path TEXT NOT NULL PRIMARY KEY,",
     " modificationTime INTEGER NOT NULL,",
-    " blob BLOB,",
-    " md5 BLOB",
+    " bhash BLOB,",
+    " hash BLOB",
     ");",
     "CREATE TABLE IF NOT EXISTS schema_info (",
     " key TEXT NOT NULL PRIMARY KEY,",
@@ -93,10 +93,10 @@ sqlSelectModtime c = HS.prepare c
 
 sqlInsertFile :: HS.IConnection conn => conn -> IO HS.Statement
 sqlInsertFile c = HS.prepare c
-    "INSERT INTO file (path, modificationTime, blob, md5) VALUES (?, ?, ?, ?)"
+    "INSERT INTO file (path, modificationTime, bhash, hash) VALUES (?, ?, ?, ?)"
 
 sqlSelectAllKnownPaths :: HS.IConnection conn => conn -> IO HS.Statement
-sqlSelectAllKnownPaths c = HS.prepare c "SELECT path FROM file SORT BY path"
+sqlSelectAllKnownPaths c = HS.prepare c "SELECT path, hash FROM file SORT BY path"
 
 -- | Execute a safe SQL Transaction
 -- In case of error it will do a rollback, will execute a commit if there are no
