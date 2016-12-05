@@ -66,7 +66,11 @@ data Entry = File {
         errorPath :: String,
         exception :: IOException
     }
-    deriving (Show)
+    deriving (Show, Eq)
+
+data Comparison a = NewLeft a
+                  | NewRight a
+                  | Collision a a
 
 addChecksum :: Entry -> FileDigest -> [FileDigest] -> Entry
 addChecksum (File a b c) total blocks = ChecksumFile a b c total blocks
@@ -180,18 +184,42 @@ hashblocks size h = (\(a,b) -> (hashFinalize a, b [])) <$> loop h (hashInit, id)
 
 -- Finds element that are different between the two sources
 -- Usually one source is the local database, the other one is the current status
-findDiffs :: (Eq o, Monad m) => Source m o -> Source m o -> Source m (Bool, o, o)
+findDiffs :: (Monad m) => Source m Entry -> Source m Entry -> Source m (Comparison Entry)
 findDiffs s1 s2 = do
-    rs1 <- newResumableSource s1
-    rs2 <- newResumableSource s2
     -- get first elements from both
-    v1 <- lift $ rs1 $$++ await
-    v2 <- lift $ rs2 $$++ await
+    v1 <- lift $ newResumableSource s1 $$++ await
+    v2 <- lift $ newResumableSource s2 $$++ await
+
     recurse v1 v2
     where
-        -- TODO do all the cases and tail recursively yield the differences
-        recurse (rs1, a) (rs2, b) = do
-            return ()
+
+        -- do all the cases and tail recursively yield the differences
+        recurse (rs1, Nothing) (rs2, Nothing) = return ()
+        recurse v1@(rs1, Nothing) (rs2, Just b) = do
+            yield (NewRight b)
+            v2 <- lift $ rs2 $$++ await
+            recurse v1 v2
+
+        recurse (rs1, Just a) v2@(rs2, Nothing) = do
+            yield (NewLeft a)
+            v1 <- lift $ rs1 $$++ await
+            recurse v1 v2
+
+        recurse (rs1, Just a) (rs2, Just b) | entryPath a == entryPath b = do
+            when (a /= b) (yield $ Collision a b)
+            v1 <- lift $ rs1 $$++ await
+            v2 <- lift $ rs2 $$++ await
+            recurse v1 v2
+
+        recurse (rs1, Just a) v2@(rs2, Just b) | entryPath a < entryPath b = do
+            yield $ NewLeft a
+            v1 <- lift $ rs1 $$++ await
+            recurse v1 v2
+
+        recurse v1@(rs1, Just a) (rs2, Just b) | entryPath a > entryPath b = do
+            yield $ NewRight b
+            v2 <- lift $ rs2 $$++ await
+            recurse v1 v2
 
 testFS = do
     c <- DB.connect "test.db"
