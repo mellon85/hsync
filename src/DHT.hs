@@ -320,9 +320,9 @@ addHostAddress addr port =
     allocaArray 4 (\ipPtr -> do
         poke ipPtr addr
         ffi_add_node_4 (castPtr ipPtr) $ fromIntegral port)
-addHostAddress6 addr port =
+addHostAddress6 (a1,a2,a3,a4) port =
     allocaArray 16 (\ipPtr -> do
-        poke ipPtr addr
+        pokeArray ipPtr [a1,a2,a3,a4]
         ffi_add_node_6 (castPtr ipPtr) $ fromIntegral port)
 
 bootstrapNodes = [
@@ -341,7 +341,7 @@ addRemoteBootstrapNodes = do
             mapM (pure . \a -> (addrAddress a,port))
 
         addSockAddr (SockAddrInet _ addr) = addHostAddress addr
-        addSockAddr (SockAddrInet6 _ addr _ _) = addHostAddress6 addr
+        addSockAddr (SockAddrInet6 _ _ addr _) = addHostAddress6 addr
 
 
 saveBootstrap :: String -> IO Int
