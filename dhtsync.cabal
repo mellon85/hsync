@@ -37,10 +37,10 @@ test-suite test
   hs-source-dirs:      test
   other-modules:       DBtest, MyArbitrary, FSWatcherTest
   main-is:             Spec.hs
-  build-depends:       base, dhtsync, QuickCheck, HDBC, time, bytestring, containers
+  build-depends:       base, dhtsync, QuickCheck, HDBC, time, bytestring,
+    containers, conduit, cryptonite
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   default-language:    Haskell2010
-  
 
 source-repository head
   type:     git

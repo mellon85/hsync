@@ -2,11 +2,34 @@
 
 module FSWatcherTest where
 
--- Symlink can be checked only on linu with the Unix package
+import Data.Conduit
+import Data.Conduit.List
+import Test.QuickCheck
+import Test.QuickCheck.Monadic
+import Data.Time.Clock
+
 import qualified FSWatcher as FS
 import MyArbitrary
 
-prop_test1 = assert True
+fromPath p t = FS.File p t False
+
+prop_SimpleDiff path1 path2 = path1 /= path2 ==> monadicIO $ do
+    v <- run $ do
+        t <- getCurrentTime
+        s1 <- return $ sourceList [fromPath path1 t]
+        s2 <- return $ sourceList [fromPath path2 t]
+        df <- FS.findDiffs s1 s2 $$ consume
+        return $ length df
+    assert $ v == 2
+
+prop_SimpleDiff_Eq path1 path2 = path1 == path2 ==> monadicIO $ do
+    v <- run $ do
+        t <- getCurrentTime
+        s1 <- return $ sourceList [fromPath path1 t]
+        s2 <- return $ sourceList [fromPath path2 t]
+        df <- FS.findDiffs s1 s2 $$ consume
+        return $ length df
+    assert $ v == 0
 
 return []
 runTests = $quickCheckAll

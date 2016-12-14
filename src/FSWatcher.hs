@@ -64,7 +64,7 @@ data Entry = File {
    }
            | Error {
         errorPath :: String,
-        exception :: IOException
+        exception :: String
     }
     deriving (Show, Eq)
 
@@ -104,7 +104,7 @@ iterateDirectory' x = do
     send x True
     entries <- liftIO . tryIOError $ getDirectoryContents x
     case entries of
-        Left e -> yield $ Error x e
+        Left e -> yield $ Error x $ displayException e
         Right l -> mapM_ recurse l
     where
         -- filter out special paths
@@ -125,7 +125,7 @@ iterateDirectory' x = do
         send path isDir = do
             modTime <- liftIO . tryIOError $ getModificationTime path
             case modTime of
-                Left e -> yield $ Error path e
+                Left e -> yield $ Error path $ displayException e
                 Right t -> do
                     ret <- checkDate path t
                     unless ret . yield $ make path t (symlink path)
@@ -159,7 +159,9 @@ hashEntry = awaitForever hashit
 
         foo :: Entry -> IO Entry
         foo x = withFile (entryPath x) ReadMode (hash x) `catch`
-            (return . Error (entryPath x))
+            (return . Error (entryPath x) . io2s)
+        io2s :: IOException -> String
+        io2s = displayException
 
         hash x handle = do
             (h,b) <- hashblocks dbHashBlockSize handle
