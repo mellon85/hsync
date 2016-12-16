@@ -63,7 +63,7 @@ data Entry = File {
         isSymlink :: Bool
    }
            | Error {
-        errorPath :: String,
+        entryPath :: String,
         exception :: String
     }
     deriving (Show, Eq)
