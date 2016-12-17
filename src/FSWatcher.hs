@@ -68,9 +68,13 @@ data Entry = File {
     }
     deriving (Show, Eq)
 
+instance Ord Entry where
+    a <= b = entryPath a <= entryPath b
+
 data Comparison a = NewLeft a
                   | NewRight a
                   | Collision a a
+    deriving (Show)
 
 addChecksum :: Entry -> FileDigest -> [FileDigest] -> Entry
 addChecksum (File a b c) total blocks = ChecksumFile a b c total blocks
