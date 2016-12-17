@@ -179,6 +179,7 @@ runDHT dht v4 v6 port dht_id = runResourceT $ do
 
     -- check r for exceptions
     when (fromIntegral r /= 0) $ throw . DHTFail $ fromIntegral r
+    liftIO $ debugM logModule "DHT runloop completed"
     where
         nullSocket = return . CInt $ negate 1
 
@@ -189,8 +190,6 @@ runDHT dht v4 v6 port dht_id = runResourceT $ do
         makeSocket6 sock port = maybe nullSocket $ \host -> do
             bind sock $ SockAddrInet6 (fromIntegral port) 0 host 0
             return $ fdSocket sock
-
-
 
 makeDHT count port = do
     entries <- newMVar Map.empty
@@ -219,9 +218,13 @@ startDHT v4 v6 port dht_id = do
 stopDHT :: DHT -> IO ()
 stopDHT dht = do
     ffi_stop_dht
+    debugM logModule "DHT stopping"
     modifyMVar_ (searches dht) (\_ -> pure Map.empty) -- zero the map of searches
+    debugM logModule "DHT searches deleted"
     cb <- tryTakeMVar (callback dht)
+    debugM logModule "DHT delete callback"
     return $ freeHaskellFunPtr <$> cb
+    infoM logModule "DHT stopped"
     return ()
 
 -- |Generates a random DHTID

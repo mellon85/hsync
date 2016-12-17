@@ -9,11 +9,13 @@ import FSWatcher
 
 logModule = rootLogger
 
+sleepTime = 20000000
+
 test dht = do
     id <- D.generateID
     debugM logModule $ show id
     t <- D.search dht id
-    threadDelay 20000000
+    threadDelay sleepTime
     D.nodes >>= debugM logModule . show
 
 main :: IO ()
@@ -35,9 +37,10 @@ main = do
     test dht
     test dht
 
-    threadDelay 200000000
+    threadDelay sleepTime
     D.saveBootstrap "nodes.dump"
     D.stopDHT dht
 
     closeLogger
+    infoM logModule $ "Closing"
 

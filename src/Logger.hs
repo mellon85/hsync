@@ -19,9 +19,9 @@ setupLogger prio = do
     fileLog <- fileHandler "dht-sync.log" DEBUG >>= \lh ->
         return $ LH.setFormatter lh $
                 simpleLogFormatter "$utcTime <$loggername> $tid [$prio] $msg"
-    updateGlobalLogger "" removeHandler
-    updateGlobalLogger "" $ addHandler fileLog
-    updateGlobalLogger "" $ setLevel prio
+    updateGlobalLogger rootLogger removeHandler
+    updateGlobalLogger rootLogger $ addHandler fileLog
+    updateGlobalLogger rootLogger $ setLevel prio
     debugM rootLogger "Started logging"
 
 closeLogger :: IO ()
