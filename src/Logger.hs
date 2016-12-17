@@ -13,14 +13,23 @@ import System.Log.Logger
 import qualified System.Log.Handler as LH
 import System.Log.Handler.Simple
 import System.Log.Formatter (simpleLogFormatter)
+import System.IO (stdout)
+
+logFormat = "$utcTime <$loggername> $tid [$prio] $msg"
 
 setupLogger :: Priority -> IO ()
 setupLogger prio = do
     fileLog <- fileHandler "dht-sync.log" DEBUG >>= \lh ->
         return $ LH.setFormatter lh $
-                simpleLogFormatter "$utcTime <$loggername> $tid [$prio] $msg"
+                simpleLogFormatter logFormat
+
+    console <- streamHandler stdout ERROR >>= \lh ->
+        return $ LH.setFormatter lh $
+                simpleLogFormatter logFormat
+
     updateGlobalLogger "" removeHandler
     updateGlobalLogger "" $ addHandler fileLog
+    updateGlobalLogger "" $ addHandler console
     updateGlobalLogger "" $ setLevel prio
     debugM rootLogger "Started logging"
 
