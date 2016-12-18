@@ -181,37 +181,35 @@ findDiffs s1 s2 = do
     -- get first elements from both
     v1 <- lift $ newResumableSource s1 $$++ await
     v2 <- lift $ newResumableSource s2 $$++ await
-
     recurse v1 v2
     where
 
         -- do all the cases and tail recursively yield the differences
-        recurse (rs1, Nothing) (rs2, Nothing) = return ()
-        recurse v1@(rs1, Nothing) (rs2, Just b) = do
+        recurse (_, Nothing) (_, Nothing) = return ()
+        recurse v1@(_, Nothing) (rs2, Just b) = do
             yield (NewRight b)
             v2 <- lift $ rs2 $$++ await
             recurse v1 v2
 
-        recurse (rs1, Just a) v2@(rs2, Nothing) = do
+        recurse (rs1, Just a) v2@(_, Nothing) = do
             yield (NewLeft a)
             v1 <- lift $ rs1 $$++ await
             recurse v1 v2
 
-        recurse (rs1, Just a) (rs2, Just b) | entryPath a == entryPath b = do
-            when (a /= b) (yield $ Collision a b)
-            v1 <- lift $ rs1 $$++ await
-            v2 <- lift $ rs2 $$++ await
-            recurse v1 v2
-
-        recurse (rs1, Just a) v2@(rs2, Just b) | entryPath a < entryPath b = do
-            yield $ NewLeft a
-            v1 <- lift $ rs1 $$++ await
-            recurse v1 v2
-
-        recurse v1@(rs1, Just a) (rs2, Just b) | entryPath a > entryPath b = do
-            yield $ NewRight b
-            v2 <- lift $ rs2 $$++ await
-            recurse v1 v2
+        recurse v1@(rs1, Just a) v2@(rs2, Just b)
+            | entryPath a == entryPath b = do
+                when (a /= b) (yield $ Collision a b)
+                v1 <- lift $ rs1 $$++ await
+                v2 <- lift $ rs2 $$++ await
+                recurse v1 v2
+            | entryPath a < entryPath b = do
+                yield $ NewLeft a
+                v1 <- lift $ rs1 $$++ await
+                recurse v1 v2
+            | entryPath a > entryPath b = do
+                yield $ NewRight b
+                v2 <- lift $ rs2 $$++ await
+                recurse v1 v2
 
 testFS = do
     c <- DB.connect "test.db"
