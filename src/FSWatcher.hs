@@ -1,14 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
 
--- TODO remove HDBC.Sqlite3 from here and put it into the DB package
--- along with all queriesi (that will be prepared there)
--- The Reader will carry around the connection though
--- DB Monad? no needed, anyway we are going to use direct HDBC calls outside
--- and the driver specific ones in the DB module
--- How do we store the path of where the database is?
-
--- Symlink can be checked only on linu with the Unix package
-
 module FSWatcher (
         iterateDirectory,
         Entry(..),
@@ -93,9 +84,6 @@ iterateDirectory :: (Monad m, MonadIO m, HS.IConnection c)
 iterateDirectory x c = do
     statement <- liftIO $ DB.sqlSelectModtime c
     runReaderC (IteratorConf statement False) (iterateDirectory' x)
-
--- TODO should traverse the directory and the database at the same time to
--- detect also deleted files.
 
 -- Internal directory iterator
 iterateDirectory' :: (Monad m, MonadIO m, MonadReader IteratorConfiguration m)
