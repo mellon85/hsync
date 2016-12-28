@@ -37,8 +37,6 @@ import Foreign.Marshal.Utils
 import Foreign.Marshal.Alloc
 import Foreign.Marshal.Array
 
-import Control.Monad.STM
-
 import System.Random
 import Data.IP
 
@@ -63,8 +61,9 @@ import Crypto.Hash
 import Data.ByteArray as BA
 
 -- STM
+import Control.Concurrent.STM.TVar
 import Control.Concurrent.STM.TChan
-import Control.Concurrent.MVar
+import Control.Monad.STM
 
 import Numeric
 
@@ -128,8 +127,8 @@ data SearchResult = End
                   | IP6 HostAddress6 Word16
 
 data DHT = DHT {
-        searches :: MVar (Map.Map DHTID (TChan SearchResult, Int)),
-        callback :: MVar (FunPtr FFICallback),
+        searches :: TVar (Map.Map DHTID (TChan SearchResult, Int)),
+        callback :: TVar (Maybe (FunPtr FFICallback)),
         protoCount :: Int,
         announcePort :: CShort
     }
@@ -174,8 +173,10 @@ runDHT dht v4 v6 port dht_id = runResourceT $ do
     (_, s6) <- allocate (liftIO $ socket AF_INET6 Datagram defaultProtocol) close
     fd4 <- liftIO $ makeSocket4 s4 port v4
     fd6 <- liftIO $ makeSocket6 s6 port v6
-    callback <- liftIO $ readMVar (callback dht)
-    r <- liftIO $ ffi_run_dht fd4 fd6 (castPtr dhtid) callback
+    callback <- liftIO . atomically . readTVar . callback $ dht
+    r <- case callback of
+        (Just c) -> liftIO $ ffi_run_dht fd4 fd6 (castPtr dhtid) c
+        Nothing  -> return 0
 
     -- check r for exceptions
     when (fromIntegral r /= 0) $ throw . DHTFail $ fromIntegral r
@@ -190,20 +191,18 @@ runDHT dht v4 v6 port dht_id = runResourceT $ do
             bind sock $ SockAddrInet6 (fromIntegral port) 0 host 0
             return $ fdSocket sock
 
-
-
 makeDHT count port = do
-    entries <- newMVar Map.empty
-    cb <- newEmptyMVar
-    let dht = DHT {
+    entries <- newTVarIO Map.empty
+    cb <- newTVarIO Nothing
+    dht <- return $ DHT {
             searches = entries,
             callback = cb,
             protoCount = count,
             announcePort = fromIntegral port
         }
-        in do
-        mkCallback (ffiCallback dht) >>= putMVar (callback dht)
-        return dht
+    cb <- mkCallback (ffiCallback dht)
+    cb <- newTVarIO $ Just cb
+    return $  dht { callback = cb }
 
 startDHT :: Maybe HostAddress     -- ^ IPv4 address
          -> Maybe HostAddress6    -- ^ IPv6 address
@@ -219,8 +218,11 @@ startDHT v4 v6 port dht_id = do
 stopDHT :: DHT -> IO ()
 stopDHT dht = do
     ffi_stop_dht
-    modifyMVar_ (searches dht) (\_ -> pure Map.empty) -- zero the map of searches
-    cb <- tryTakeMVar (callback dht)
+    cb <- atomically $ do
+        writeTVar (searches dht) Map.empty -- zero the map of searches
+        cb <- readTVar $ callback dht
+        writeTVar (callback dht) Nothing
+        return cb
     return $ freeHaskellFunPtr <$> cb
     return ()
 
@@ -253,8 +255,11 @@ search' dht dht_id port = do
     forkIO $ do
         dhtid <- malloc
         poke dhtid dht_id
-        readMVar (callback dht) >>= ffi_search (castPtr dhtid) port
-    modifyMVar_ (searches dht) $ pure . Map.insert dht_id (tchan, protoCount dht)
+        cb <- readTVarIO (callback dht)
+        case cb of
+            Just c  -> do ffi_search (castPtr dhtid) port c
+            Nothing -> return ()
+    atomically $ modifyTVar (searches dht) $ Map.insert dht_id (tchan, protoCount dht)
     return tchan
 
 -- |Callback from DHT
@@ -264,7 +269,9 @@ ffiCallback dht _ event hash addr len = do
     ffiCallback' dht event dht_id addr len
 
 ffiCallback' dht event dht_id addr len = do
-    mchan <- withMVar (searches dht) $ return . Map.lookup dht_id
+    mchan <- atomically $ do
+        s <- readTVar $ searches dht
+        return $ Map.lookup dht_id s
     maybe (return ()) (\(chan, count) ->
         case event of
             0 -> return () -- no event
@@ -290,13 +297,13 @@ ffiCallback' dht event dht_id addr len = do
         ) mchan
     where
         receivedEnd chan count | count > 1 = decrease dht
-                               | otherwise = do
-                                    atomically . writeTChan chan $ End
-                                    modifyMVar_ (searches dht) (pure . Map.delete dht_id)
+                               | otherwise = atomically $ do
+                                    writeTChan chan End
+                                    modifyTVar (searches dht) (Map.delete dht_id)
 
         decrease dht = let
             decreaseElem = maybe Nothing (\(t,c) -> Just (t,c-1))
-            in modifyMVar_ (searches dht) (pure . Map.alter decreaseElem dht_id)
+            in atomically $ modifyTVar (searches dht) (Map.alter decreaseElem dht_id)
 
 -- |Wrapper to pass the callback function to the C layer
 foreign import ccall "wrapper"
