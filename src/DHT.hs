@@ -296,14 +296,14 @@ ffiCallback' dht event dht_id addr len = do
             _ -> return () -- Unknown event, ignore and hope for the best
         ) mchan
     where
-        receivedEnd chan count | count > 1 = decrease dht
-                               | otherwise = atomically $ do
-                                    writeTChan chan End
-                                    modifyTVar (searches dht) (Map.delete dht_id)
+        receivedEnd chan count = atomically $ do
+            if count > 1 then
+                modifyTVar (searches dht) (Map.alter decreaseElem dht_id)
+            else do
+                writeTChan chan End
+                modifyTVar (searches dht) (Map.delete dht_id)
 
-        decrease dht = let
-            decreaseElem = maybe Nothing (\(t,c) -> Just (t,c-1))
-            in atomically $ modifyTVar (searches dht) (Map.alter decreaseElem dht_id)
+        decreaseElem = maybe Nothing (\(t,c) -> Just (t,c-1))
 
 -- |Wrapper to pass the callback function to the C layer
 foreign import ccall "wrapper"
