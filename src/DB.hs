@@ -6,9 +6,9 @@ module DB
      setup,
      verify,
      upgrade,
-     sqlSelectModtime,
-     sqlInsertFile,
      getVersion,
+     sqlSelectModtime,
+     DBConnection,
      version)
     where
 
@@ -17,20 +17,44 @@ import qualified Database.HDBC.Sqlite3 as HSD
 import Data.List
 import Control.Monad
 import Control.Exception
+import Data.Array
+import Control.Concurrent.MVar
 
 import Logger
+import FileEntry
 
 type Connection = HSD.Connection
 
 logModule = "DB"
 
+-- array of prepare statement
+-- used by all functions,no more exposure of the statements themselves
+data DBConnection = DBC {
+        handle :: HSD.Connection,
+        statements :: Array Int (MVar HS.Statement)
+    }
+
 -- |Connect to the underlying SQL database
-connect :: FilePath -> IO HSD.Connection
+connect :: FilePath -> IO DBConnection
 connect x = do
     c <- HSD.connectSqlite3 x
     HS.quickQuery c "PRAGMA encoding = \"UTF-8\";" []
     --HS.quickQuery c "PRAGMA journal_mode=WAL;" []
-    return c
+    prep_stmt <- mapM (\(a, s) -> do
+        m <- HS.prepare c s
+        s' <- newMVar m
+        return (a, s')) db_statements
+    return . DBC c $ array (0, length prep_stmt - 1) prep_stmt
+
+db_statements = [
+    -- get version
+    (0, "SELECT value FROM schema_info WHERE key='version';"),
+    -- check file in db based on modification time
+    (1, "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"),
+    -- insert a file
+    (2, "INSERT INTO file (path, modificationTime, bhash, hash) VALUES (?, ?, ?, ?)"),
+    -- all known paths
+    (3, "SELECT path, hash FROM file SORT BY path")]
 
 disconnect :: (HS.IConnection a) => a -> IO ()
 disconnect = HS.disconnect
@@ -54,8 +78,8 @@ setupSQL = intercalate "\n" [
     ");",
     "INSERT OR REPLACE INTO schema_info VALUES ('version', '"++show version++"');"]
 
-verify :: (HS.IConnection a) => a -> IO Bool
-verify c = do
+verify :: DBConnection -> IO Bool
+verify (DBC c _) = do
     debugM logModule "Fetch tables"
     s <- HS.prepare c "SELECT name FROM sqlite_master WHERE type='table'"
     HS.execute s []
@@ -81,8 +105,8 @@ getVersion c = do
         _     -> ioError . userError $ "Version fetching failed"
 
 -- |Setup a database given a connection
-setup :: (HS.IConnection a) => a -> IO ()
-setup c = do
+setup :: DBConnection -> IO ()
+setup (DBC c _) = do
     HS.runRaw c setupSQL
     HS.commit c
     return ()
@@ -97,6 +121,13 @@ sqlInsertFile c = HS.prepare c
 
 sqlSelectAllKnownPaths :: HS.IConnection conn => conn -> IO HS.Statement
 sqlSelectAllKnownPaths c = HS.prepare c "SELECT path, hash FROM file SORT BY path"
+
+
+insertFile :: (HS.IConnection conn)
+    => conn
+    -> Entry
+    -> IO ()
+insertFile c file = return () 
 
 -- | Execute a safe SQL Transaction
 -- In case of error it will do a rollback, will execute a commit if there are no

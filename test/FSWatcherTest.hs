@@ -8,6 +8,7 @@ import Test.QuickCheck
 import Test.QuickCheck.Monadic
 import Test.QuickCheck.Modifiers
 
+import Data.List (sort)
 import Data.Time.Clock
 
 import qualified FSWatcher as FS
@@ -21,15 +22,12 @@ allDiff (a:xs) | a /= (head xs) &&
                  FS.entryPath a /= FS.entryPath (head xs) = allDiff xs
                | otherwise      = False
 
-prop_findDiffs_correct (Ordered ex) (Positive a) (Positive b) = allDiff ex &&
-            a >= 0 && a < b && b < length ex ==> monadicIO $ do
+prop_findDiffs ex1 ex2 common =
+        allDiff (sort (ex1++ex2++common)) ==> monadicIO $ do
     (v,t) <- run $ do
-        ex1 <- return $ take a ex
-        ex2 <- return $ take (a-b) $ drop a ex
-        common <- return $ drop b ex
-        s1 <- return $ sourceList $ ex1 ++ common
-        s2 <- return $ sourceList $ ex2 ++ common
-        df <- FS.findDiffs s1 s2 $$ consume
+        s1 <- return . sourceList . sort $ ex1 ++ common
+        s2 <- return . sourceList . sort $ ex2 ++ common
+        df <- FS.findDiffs s2 s1 $$ consume
         return $ (length df, length ex1+length ex2)
     assert $ v == t
 

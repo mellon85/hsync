@@ -15,7 +15,7 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     DHT, DB, FSWatcher, Server, Logger
+  exposed-modules:     DHT, DB, FSWatcher, Server, Logger, FileEntry
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N
   cc-options: -O2
   c-sources: cbits/dht_ffi.c
