@@ -44,6 +44,7 @@ import Control.Concurrent (forkIO)
 import Data.Map.Strict as Map
 import Data.Typeable (Typeable)
 
+import Control.Exception (assert)
 import Control.Monad
 import Data.Maybe (isJust)
 
@@ -298,7 +299,7 @@ ffiCallback' dht event dht_id addr len = do
             _ -> return () -- Unknown event, ignore and hope for the best
         ) mchan
     where
-        receivedEnd chan count = atomically $ do
+        receivedEnd chan count = assert(count >= 1) atomically $ do
             if count > 1 then
                 modifyTVar (searches dht) (Map.alter decreaseElem dht_id)
             else do

@@ -5,7 +5,8 @@ module FSWatcher (
         Entry(..),
         filterErrors,
         findDiffs,
-        testFS
+        testFS,
+        module FileEntry
         ) where
 
 import Control.Exception
@@ -27,63 +28,29 @@ import qualified Database.HDBC as HS
 
 import qualified DB
 import Logger
+import FileEntry
 
 logModule = "FSW"
-
-type FileDigest = Digest MD5
-
--- Type returned from a Conduit looking for all files an directories
-data Entry = File {
-        entryPath :: String,
-        modificationTime :: UTCTime,
-        isSymlink :: Bool
-    }
-           | ChecksumFile {
-        entryPath :: String,
-        modificationTime :: UTCTime,
-        isSymlink :: Bool,
-        checksum :: FileDigest,
-        blocks :: [FileDigest]
-    }
-           | Directory {
-        entryPath :: String,
-        modificationTime :: UTCTime,
-        isSymlink :: Bool
-   }
-           | Error {
-        entryPath :: String,
-        exception :: String
-    }
-    deriving (Show, Eq)
-
-instance Ord Entry where
-    a <= b = entryPath a <= entryPath b
 
 data Comparison a = NewLeft a
                   | NewRight a
                   | Collision a a
     deriving (Show)
 
-addChecksum :: Entry -> FileDigest -> [FileDigest] -> Entry
-addChecksum (File a b c) total blocks = ChecksumFile a b c total blocks
-addChecksum _ _ _ = error "Add Checksum to wrong entry type"
-
 data IteratorConfiguration = IteratorConf {
-        sqlSearch :: HS.Statement,
-        followSymlink :: Bool
+        followSymlink :: Bool -- currently always false
     }
 
 dbHashBlockSize = 128*1024 :: Int64
 
 -- | Iterate a path and given a Database connection will return all the modified
 -- entries.
-iterateDirectory :: (Monad m, MonadIO m, HS.IConnection c)
+iterateDirectory :: (Monad m, MonadIO m)
     => FilePath         -- ^ Directory path
-    -> c                -- ^ Database connection
+    -> DB.DBConnection     -- ^ Database connection
     -> Source m Entry   -- ^ Conduit source
 iterateDirectory x c = do
-    statement <- liftIO $ DB.sqlSelectModtime c
-    runReaderC (IteratorConf statement False) (iterateDirectory' x)
+    runReaderC (IteratorConf False) (iterateDirectory' x)
 
 -- Internal directory iterator
 iterateDirectory' :: (Monad m, MonadIO m, MonadReader IteratorConfiguration m)

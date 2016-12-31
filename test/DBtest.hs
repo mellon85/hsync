@@ -45,7 +45,7 @@ prop_selectModTime_empty path time = monadicIO $ do
         D.disconnect db
         return v
     assert v
-
+        
 {-
 -- TODO add fake datasets
 prop_insertFiles dataset = monadicIO $ do
@@ -64,12 +64,7 @@ nodups = nodups' Set.empty where
   nodups' _ [] = True
   nodups' a (b : c) = not (Set.member b a) && nodups' (Set.insert b a) c
 
-insertFiles :: HS.IConnection a => a -> [(String, UTCTime, ByteString, ByteString)] -> IO ()
-insertFiles db files = do
-    c <- D.sqlInsertFile db
-    mapM_ (\(path, time, blocks, md5) ->
-        HS.execute c [HS.SqlString $! path, HS.SqlUTCTime $! time,
-            HS.SqlByteString blocks, HS.SqlByteString md5]) files
+
 -}
 
 return []
