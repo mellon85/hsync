@@ -19,7 +19,6 @@ import Test.QuickCheck.Monadic
 prop_SetupWorks = monadicIO $ do
     v <- run $ do
         db <- D.connect ":memory:"
-        D.setup db
         r <- D.verify db
         D.disconnect db
         return r
@@ -28,20 +27,16 @@ prop_SetupWorks = monadicIO $ do
 prop_getVersion = monadicIO $ do
     v <- run $ do
         db <- D.connect ":memory:"
-        D.setup db
         v <- D.getVersion db
         D.disconnect db
         return v
     assert $ v == D.version
 
-prop_selectModTime_empty path time = monadicIO $ do
+prop_isFileNewer_empty path time = monadicIO $ do
     v <- run $ do
         db <- D.connect ":memory:"
-        D.setup db
-        c <- D.sqlSelectModtime db
-        HS.execute c [HS.SqlString $! path, HS.SqlUTCTime $! time]
-        m <- HS.fetchRow c
-        v <- return . (==False). isJust $ m
+        c <- D.isFileNewer db path time
+        v <- return $ c == False
         D.disconnect db
         return v
     assert v
