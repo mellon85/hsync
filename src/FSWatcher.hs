@@ -17,7 +17,6 @@ import Data.Array
 import Data.Conduit
 import Data.Conduit.Lift
 import Data.Int
-import Data.Maybe (isJust)
 import Data.Time.Clock
 import System.Directory
 import System.IO
@@ -83,24 +82,12 @@ iterateDirectory' x = do
             case modTime of
                 Left e -> yield $ Error path $ displayException e
                 Right t -> do
-                    ret <- checkDate path t
+                    ret <- liftIO $ isFileNewer path t
                     sym <- liftIO $ pathIsSymbolicLink path
                     unless ret . yield $ make path t sym
             where
                 make | isDir     = Directory
                      | otherwise = File
-
--- | Returns true if the path is newer that the informations stored in the
--- database.
-checkDate :: (MonadIO m, MonadReader IteratorConfiguration m)
-    => FilePath     -- ^ Filepath
-    -> UTCTime      -- ^ Modification date
-    -> m Bool       -- ^ is newer?
-checkDate path time = do
-    s <- ask
-    liftIO $ HS.execute (sqlSearch s) [HS.SqlString $! path, HS.SqlUTCTime $! time]
-    m <- liftIO . HS.fetchRow .sqlSearch $ s
-    return . isJust $ m
 
 filterErrors :: (Monad m, MonadIO m) => Conduit Entry m Entry
 filterErrors = awaitForever match
