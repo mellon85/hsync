@@ -3,11 +3,9 @@
 module DB
     (connect,
      disconnect,
-     setup,
      verify,
      upgrade,
      getVersion,
-     sqlSelectModtime,
      DBConnection,
      isFileNewer,
      version)
@@ -44,6 +42,10 @@ connect x = do
     c <- HSD.connectSqlite3 x
     HS.quickQuery c "PRAGMA encoding = \"UTF-8\";" []
     --HS.quickQuery c "PRAGMA journal_mode=WAL;" []
+    
+    HS.runRaw c setupSQL
+    HS.commit c
+    
     prep_stmt <- mapM (\(a, s) -> do
         m <- HS.prepare c s
         s' <- newMVar m
@@ -58,10 +60,10 @@ db_statements = [
     -- insert a file
     (2, "INSERT INTO file (path, modificationTime, bhash, hash) VALUES (?, ?, ?, ?)"),
     -- all known paths
-    (3, "SELECT path, hash FROM file SORT BY path")]
+    (3, "SELECT path, hash FROM file ORDER BY path")]
 
-disconnect :: (HS.IConnection a) => a -> IO ()
-disconnect = HS.disconnect
+disconnect :: DBConnection -> IO ()
+disconnect (DBC c _) = HS.disconnect c
 
 -- |Database schema version
 version :: Int
@@ -108,17 +110,6 @@ getVersion (DBC c _) = do
         [[x]] -> return $! HS.fromSql x
         _     -> ioError . userError $ "Version fetching failed"
 
--- |Setup a database given a connection
-setup :: DBConnection -> IO ()
-setup (DBC c _) = do
-    HS.runRaw c setupSQL
-    HS.commit c
-    return ()
-
-sqlSelectModtime :: String -> UTCTime -> IO HS.Statement
-sqlSelectModtime c = HS.prepare c
-    "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"
-
 sqlInsertFile :: HS.IConnection conn => conn -> IO HS.Statement
 sqlInsertFile c = HS.prepare c
     "INSERT INTO file (path, modificationTime, bhash, hash) VALUES (?, ?, ?, ?)"
@@ -128,26 +119,26 @@ sqlSelectAllKnownPaths c = HS.prepare c "SELECT path, hash FROM file SORT BY pat
 
 -- |Given a database, query index, and parameters it will perform the query
 -- and apply the function to all the returned rows
-withStatementAll :: (Monad m, MonadIO m) => DBConnection -> Int -> [HS.SqlValue] -> ([[HS.SqlValue]] -> m b) -> m b
+withStatementAll :: (MonadIO m) => DBConnection -> Int -> [HS.SqlValue] -> ([[HS.SqlValue]] -> IO b) -> m b
 withStatementAll (DBC c ss) idx params f = assert (elem idx (indices ss)) $ do
-    liftIO $ modifyMVar' (ss ! idx) $ \stmt -> do
+    liftIO . modifyMVar (ss ! idx) $ \stmt -> do
         HS.execute stmt params
         rows <- HS.fetchAllRows stmt
         r <- f rows
-        return (ss, r)
+        return (stmt, r)
 
 -- |Given a database, query index, and parameters it will perform the query
 -- and apply the function to the first row only
-withStatement :: (MonadIO m) => DBConnection -> Int -> [HS.SqlValue] -> ((Maybe [HS.SqlValue]) -> m b) -> m b
+withStatement :: (MonadIO m) => DBConnection -> Int -> [HS.SqlValue] -> ((Maybe [HS.SqlValue]) -> IO b) -> m b
 withStatement (DBC c ss) idx params f = assert (elem idx (indices ss)) $ do
-    liftIO $ modifyMVar' (ss ! idx) $ \stmt -> do
+    liftIO . modifyMVar (ss ! idx) $ \stmt -> do
         HS.execute stmt params
         row <- HS.fetchRow stmt
         r <- f row
         r' <- HS.fetchRow stmt
         assert (r' == Nothing) (HS.finish stmt)
         -- just in case there is more than one row
-        return (ss, r)
+        return (stmt, r)
 
 -- | Returns true if the path is newer that the informations stored in the
 -- database.
@@ -158,8 +149,7 @@ isFileNewer :: (MonadIO m)
     -> m Bool       -- ^ is newer?
 isFileNewer db path time =
     withStatement db 1 [HS.SqlString $! path, HS.SqlUTCTime $! time] (\r -> do
-            return . isJust $ r
-        )
+            return . isJust $ r)
 
 insertFile :: (HS.IConnection conn)
     => conn

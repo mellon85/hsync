@@ -37,6 +37,7 @@ data Comparison a = NewLeft a
     deriving (Show)
 
 data IteratorConfiguration = IteratorConf {
+        connection :: DB.DBConnection,
         followSymlink :: Bool -- currently always false
     }
 
@@ -49,7 +50,7 @@ iterateDirectory :: (Monad m, MonadIO m)
     -> DB.DBConnection     -- ^ Database connection
     -> Source m Entry   -- ^ Conduit source
 iterateDirectory x c = do
-    runReaderC (IteratorConf False) (iterateDirectory' x)
+    runReaderC (IteratorConf c False) (iterateDirectory' x)
 
 -- Internal directory iterator
 iterateDirectory' :: (Monad m, MonadIO m, MonadReader IteratorConfiguration m)
@@ -79,10 +80,11 @@ iterateDirectory' x = do
         -- the Entry as error
         send path isDir = do
             modTime <- liftIO . tryIOError $ getModificationTime path
+            c <- ask  >>= return . connection
             case modTime of
                 Left e -> yield $ Error path $ displayException e
                 Right t -> do
-                    ret <- liftIO $ isFileNewer path t
+                    ret <- liftIO $ DB.isFileNewer c path t
                     sym <- liftIO $ pathIsSymbolicLink path
                     unless ret . yield $ make path t sym
             where
@@ -167,7 +169,6 @@ findDiffs s1 s2 = do
 
 testFS = do
     c <- DB.connect "test.db"
-    DB.setup c
     b <- DB.verify c
     unless b $ error "db corrupted"
     -- should not use filterInfo, hashing can change an Info to an Error
