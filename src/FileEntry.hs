@@ -31,7 +31,7 @@ data Entry = File {
 
 instance Ord Entry where
     a <= b = entryPath a <= entryPath b
-    
+
 addChecksum :: Entry -> FileDigest -> [FileDigest] -> Entry
 addChecksum (File a b c) total blocks = ChecksumFile a b c total blocks
 addChecksum _ _ _ = error "Add Checksum to wrong entry type"
