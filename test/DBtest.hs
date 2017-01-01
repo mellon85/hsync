@@ -40,7 +40,7 @@ prop_isFileNewer_empty path time = monadicIO $ do
         D.disconnect db
         return v
     assert v
-        
+
 {-
 -- TODO add fake datasets
 prop_insertFiles dataset = monadicIO $ do

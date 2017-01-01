@@ -42,10 +42,8 @@ connect x = do
     c <- HSD.connectSqlite3 x
     HS.quickQuery c "PRAGMA encoding = \"UTF-8\";" []
     --HS.quickQuery c "PRAGMA journal_mode=WAL;" []
-    
     HS.runRaw c setupSQL
     HS.commit c
-    
     prep_stmt <- mapM (\(a, s) -> do
         m <- HS.prepare c s
         s' <- newMVar m
@@ -150,14 +148,39 @@ isFileNewer :: (MonadIO m)
     -> UTCTime      -- ^ Modification date
     -> m Bool       -- ^ is newer?
 isFileNewer db path time =
-    withStatement db 1 [HS.SqlString $! path, HS.SqlUTCTime $! time] (\r -> do
+    withStatement db 1 [HS.SqlString path, HS.SqlUTCTime time] (\r -> do
             return . isJust $ r)
+
+applyAll e [] = []
+applyAll e (x:xs) = (x e) : applyAll e xs
 
 insertFile :: (HS.IConnection conn)
     => conn
     -> Entry
     -> IO ()
-insertFile c file = return () 
+insertFile c entry@ChecksumFile{} = do
+    withStatement db 2
+        (applyAll [HS.SqlString . entryPath,
+                   HS.SqlUTCTime . modificationTime,
+                   HS.SqlByteString . blocks,
+                   HS.SqlByteString . checksum] entry) (return ())
+
+insertFile c entry@Directory{} = do
+    withStatement db 2
+        (applyAll [HS.SqlString . entryPath,
+                   HS.SqlUTCTime . modificationTime,
+                   HS.SqlByteString . blocks,
+                   HS.SqlByteString . checksum] entry) (return ())
+
+insertFile c entry@Error{} = return ()
+
+-- Directory and File
+insertFile c entry = do
+    withStatement db 2
+        ((applyAll [HS.SqlString . entryPath,
+                   HS.SqlUTCTime . modificationTime] entry) ++
+            [HS.SqlNull, HS.SqlNull]) (return ())
+
 
 -- | Execute a safe SQL Transaction
 -- In case of error it will do a rollback, will execute a commit if there are no
