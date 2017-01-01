@@ -154,25 +154,25 @@ isFileNewer db path time =
 applyAll e [] = []
 applyAll e (x:xs) = (x e) : applyAll e xs
 
-insertFile :: (HS.IConnection conn)
-    => conn
+insertFile ::
+       DBConnection
     -> Entry
     -> IO ()
-insertFile c entry@ChecksumFile{} = do
+insertFile db entry@ChecksumFile{} = do
     withStatement db 2
         (applyAll [HS.SqlString . entryPath,
                    HS.SqlUTCTime . modificationTime,
                    HS.SqlByteString . blocks,
                    HS.SqlByteString . checksum] entry) (return ())
 
-insertFile c entry@Directory{} = do
+insertFile db entry@Directory{} = do
     withStatement db 2
         (applyAll [HS.SqlString . entryPath,
                    HS.SqlUTCTime . modificationTime,
                    HS.SqlByteString . blocks,
                    HS.SqlByteString . checksum] entry) (return ())
 
-insertFile c entry@Error{} = return ()
+insertFile db entry@Error{} = return ()
 
 -- Directory and File
 insertFile c entry = do
