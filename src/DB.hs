@@ -1,12 +1,12 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module DB
-    (connect,
+    (DBConnection,
+     connect,
      disconnect,
      verify,
      upgrade,
      getVersion,
-     DBConnection,
      isFileNewer,
      version)
     where
@@ -21,7 +21,9 @@ import Data.Maybe (isJust)
 import Data.Array
 import Data.Time.Clock
 import Control.Concurrent.MVar
+import qualified Data.ByteString as BS
 
+import HashUtils
 import Logger
 import FileEntry
 
@@ -56,7 +58,7 @@ db_statements = [
     -- check file in db based on modification time
     (1, "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"),
     -- insert a file
-    (2, "INSERT INTO file (path, modificationTime, bhash, hash) VALUES (?, ?, ?, ?)"),
+    (2, "INSERT INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"),
     -- all known paths
     (3, "SELECT path, hash FROM file ORDER BY path")]
 
@@ -74,9 +76,9 @@ setupSQL = intercalate "\n" [
     " path TEXT NOT NULL PRIMARY KEY,",
     " modificationTime INTEGER NOT NULL,",
     " directory BOOLEAN NOT NULL,",
-    " bhash BLOB,",
-    " hash BLOB,",
-    " symlink TEXT",
+    " symlink TEXT NULL",
+    " bhash BLOB NULL,",
+    " hash BLOB NULL,",
     ");",
     "CREATE TABLE IF NOT EXISTS schema_info (",
     " key TEXT NOT NULL PRIMARY KEY,",
@@ -84,6 +86,7 @@ setupSQL = intercalate "\n" [
     ");",
     "INSERT OR REPLACE INTO schema_info VALUES ('version', '"++show version++"');"]
 
+-- | Verfies that the database structure looks ok
 verify :: DBConnection -> IO Bool
 verify (DBC c _) = do
     debugM logModule "Fetch tables"
@@ -119,7 +122,13 @@ sqlSelectAllKnownPaths c = HS.prepare c "SELECT path, hash FROM file SORT BY pat
 
 -- |Given a database, query index, and parameters it will perform the query
 -- and apply the function to all the returned rows
-withStatementAll :: (MonadIO m) => DBConnection -> Int -> [HS.SqlValue] -> ([[HS.SqlValue]] -> IO b) -> m b
+withStatementAll :: (MonadIO m) => 
+       DBConnection              -- ^ Database connection
+    -> Int                       -- ^ Statement ID
+    -> [HS.SqlValue]             -- ^ Values to pass as input
+    -> ([[HS.SqlValue]] -> IO b) -- ^ All results sets lazily fetch are passed
+                                 --   to this function
+    -> m b                       -- ^ Returns the value in the source monad
 withStatementAll (DBC c ss) idx params f = assert (elem idx (indices ss)) $ do
     liftIO . modifyMVar (ss ! idx) $ \stmt -> do
         HS.execute stmt params
@@ -129,7 +138,12 @@ withStatementAll (DBC c ss) idx params f = assert (elem idx (indices ss)) $ do
 
 -- |Given a database, query index, and parameters it will perform the query
 -- and apply the function to the first row only
-withStatement :: (MonadIO m) => DBConnection -> Int -> [HS.SqlValue] -> ((Maybe [HS.SqlValue]) -> IO b) -> m b
+withStatement :: (MonadIO m) =>
+       DBConnection              -- ^ Database connection
+    -> Int                       -- ^ Statement ID
+    -> [HS.SqlValue]             -- ^ Values to pass as input
+    -> ((Maybe [HS.SqlValue]) -> IO b) -- The single result 
+    -> m b                       -- ^ Returns the value in the source monad
 withStatement (DBC c ss) idx params f = assert (elem idx (indices ss)) $ do
     liftIO . modifyMVar (ss ! idx) $ \stmt -> do
         HS.execute stmt params
@@ -154,33 +168,29 @@ isFileNewer db path time =
 applyAll e [] = []
 applyAll e (x:xs) = (x e) : applyAll e xs
 
+-- |Insert a Entry object in the database
+-- If it's an Error it's skipped, everything else is inserted in the database 
 insertFile ::
-       DBConnection
-    -> Entry
+       DBConnection -- ^ database connection
+    -> Entry        -- ^ Entry to store in the database
     -> IO ()
-insertFile db entry@ChecksumFile{} = do
-    withStatement db 2
-        (applyAll [HS.SqlString . entryPath,
-                   HS.SqlUTCTime . modificationTime,
-                   HS.SqlByteString . blocks,
-                   HS.SqlByteString . checksum] entry) (return ())
-
-insertFile db entry@Directory{} = do
-    withStatement db 2
-        (applyAll [HS.SqlString . entryPath,
-                   HS.SqlUTCTime . modificationTime,
-                   HS.SqlByteString . blocks,
-                   HS.SqlByteString . checksum] entry) (return ())
-
 insertFile db entry@Error{} = return ()
-
--- Directory and File
 insertFile c entry = do
     withStatement db 2
-        ((applyAll [HS.SqlString . entryPath,
-                   HS.SqlUTCTime . modificationTime] entry) ++
-            [HS.SqlNull, HS.SqlNull]) (return ())
+        (applyAll [HS.SqlString . entryPath,
+                   HS.SqlUTCTime . modificationTime,
+                   HS.SqlBoolean . isDirectory,
+                   getSymlinkOrNull,
+                   getFileBlobField blocks,
+                   getFileBlobField checksum] entry) (return ())
 
+getSymlinkOrNull :: Entry -> SqlValue
+getSymlinkOrNull e@Symlink{} = HS.SqlString . target $ e
+getSymlinkOrNull _ = HS.SqlNull
+
+getFileBlobField :: (Entry -> BS.ByteString) -> Entry -> SqlValue
+getFileBlobField f e@ChecksumFile{} = HS.SqlByteString . digest2bytestring. f $ e
+getFileBlobField _ = HS.SqlNull
 
 -- | Execute a safe SQL Transaction
 -- In case of error it will do a rollback, will execute a commit if there are no
