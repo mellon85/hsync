@@ -1,4 +1,10 @@
-module FileEntry where
+module FileEntry (
+        Entry(..),
+        FileDigest,
+        isDirectory,
+        isSymlink,
+        addChecksum
+    ) where
 
 import Crypto.Hash
 import Data.Time.Clock
@@ -8,20 +14,22 @@ type FileDigest = Digest MD5
 -- Type returned from a Conduit looking for all files an directories
 data Entry = File {
         entryPath :: String,
-        modificationTime :: UTCTime,
-        isSymlink :: Bool
+        modificationTime :: UTCTime
     }
            | ChecksumFile {
         entryPath :: String,
         modificationTime :: UTCTime,
-        isSymlink :: Bool,
         checksum :: FileDigest,
         blocks :: [FileDigest]
     }
-           | Directory {
+           | Symlink {
         entryPath :: String,
         modificationTime :: UTCTime,
-        isSymlink :: Bool
+        target :: String
+    }
+           | Directory {
+        entryPath :: String,
+        modificationTime :: UTCTime
    }
            | Error {
         entryPath :: String,
@@ -31,6 +39,14 @@ data Entry = File {
 
 instance Ord Entry where
     a <= b = entryPath a <= entryPath b
+
+isDirectory :: Entry -> Bool
+isDirectory entry@Directory{} = True
+isDirectory _ = False
+
+isSymlink :: Entry -> Bool
+isSymlink entry@Symlink{} = True
+isSymlink _ = False
 
 addChecksum :: Entry -> FileDigest -> [FileDigest] -> Entry
 addChecksum (File a b c) total blocks = ChecksumFile a b c total blocks
