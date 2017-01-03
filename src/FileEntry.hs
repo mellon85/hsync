@@ -9,6 +9,7 @@ module FileEntry (
 import Crypto.Hash
 import Data.Time.Clock
 
+
 type FileDigest = Digest MD5
 
 -- Type returned from a Conduit looking for all files an directories
@@ -49,6 +50,6 @@ isSymlink entry@Symlink{} = True
 isSymlink _ = False
 
 addChecksum :: Entry -> FileDigest -> [FileDigest] -> Entry
-addChecksum (File a b c) total blocks = ChecksumFile a b c total blocks
-addChecksum _ _ _ = error "Add Checksum to wrong entry type"
+addChecksum (File a b) total blocks = ChecksumFile a b total blocks
+addChecksum _ _ _  = error "Add Checksum to wrong entry type"
 

@@ -8,6 +8,8 @@ module DB
      upgrade,
      getVersion,
      isFileNewer,
+     upsertFile,
+     insertFile,
      version)
     where
 
@@ -60,7 +62,8 @@ db_statements = [
     -- insert a file
     (2, "INSERT INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"),
     -- all known paths
-    (3, "SELECT path, hash FROM file ORDER BY path")]
+    (3, "SELECT path, hash FROM file ORDER BY path"),
+    (4, "INSERT OR REPLACE INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)")]
 
 disconnect :: DBConnection -> IO ()
 disconnect (DBC c _) = HS.disconnect c
@@ -113,10 +116,6 @@ getVersion (DBC c _) = do
         [[x]] -> return $! HS.fromSql x
         _     -> ioError . userError $ "Version fetching failed"
 
-sqlInsertFile :: HS.IConnection conn => conn -> IO HS.Statement
-sqlInsertFile c = HS.prepare c
-    "INSERT INTO file (path, modificationTime, bhash, hash) VALUES (?, ?, ?, ?)"
-
 sqlSelectAllKnownPaths :: HS.IConnection conn => conn -> IO HS.Statement
 sqlSelectAllKnownPaths c = HS.prepare c "SELECT path, hash FROM file SORT BY path"
 
@@ -165,8 +164,25 @@ isFileNewer db path time =
     withStatement db 1 [HS.SqlString path, HS.SqlUTCTime time] (\r -> do
             return . isJust $ r)
 
-applyAll e [] = []
-applyAll e (x:xs) = (x e) : applyAll e xs
+-- | Apply the Entry to any function passed to it to return a value
+applyAll :: [Entry -> HS.SqlValue] -> Entry -> [HS.SqlValue]
+applyAll xs e = map (\f -> f e) xs
+
+-- |Inserts or updates an Entry object in the database
+-- If it's an Error it's skipped, everything else is inserted in the database
+upsertFile ::
+       DBConnection -- ^ database connection
+    -> Entry        -- ^ Entry to store in the database
+    -> IO ()
+upsertFile db entry@Error{} = return ()
+upsertFile db entry = do
+    withStatement db 4
+        (applyAll [HS.SqlString . entryPath,
+                   HS.SqlUTCTime . modificationTime,
+                   HS.SqlBool . isDirectory,
+                   getSymlinkOrNull,
+                   getFileBlobField blocks,
+                   getFileBlobField checksum] entry) (return ())
 
 -- |Insert a Entry object in the database
 -- If it's an Error it's skipped, everything else is inserted in the database 
@@ -175,21 +191,21 @@ insertFile ::
     -> Entry        -- ^ Entry to store in the database
     -> IO ()
 insertFile db entry@Error{} = return ()
-insertFile c entry = do
+insertFile db entry = do
     withStatement db 2
         (applyAll [HS.SqlString . entryPath,
                    HS.SqlUTCTime . modificationTime,
-                   HS.SqlBoolean . isDirectory,
+                   HS.SqlBool . isDirectory,
                    getSymlinkOrNull,
-                   getFileBlobField blocks,
+                   getFileBlobField ((\x->[x]) . blocks),
                    getFileBlobField checksum] entry) (return ())
 
-getSymlinkOrNull :: Entry -> SqlValue
+getSymlinkOrNull :: Entry -> HS.SqlValue
 getSymlinkOrNull e@Symlink{} = HS.SqlString . target $ e
 getSymlinkOrNull _ = HS.SqlNull
 
-getFileBlobField :: (Entry -> BS.ByteString) -> Entry -> SqlValue
-getFileBlobField f e@ChecksumFile{} = HS.SqlByteString . digest2bytestring. f $ e
+getFileBlobField :: (Entry -> FileDigest) -> Entry -> HS.SqlValue
+getFileBlobField f e@ChecksumFile{} = HS.SqlByteString .  digest2bytestring . f $ e
 getFileBlobField _ = HS.SqlNull
 
 -- | Execute a safe SQL Transaction
