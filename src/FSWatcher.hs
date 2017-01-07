@@ -1,4 +1,4 @@
--- {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module FSWatcher (
         iterateDirectory,
@@ -43,14 +43,19 @@ data IteratorConfiguration = IteratorConf {
 
 dbHashBlockSize = 128*1024 :: Int64
 
+-- TODO must be replaced with a function get the symlink path
+symlink_empty = ""
+
 -- | Iterate a path and given a Database connection will return all the modified
 -- entries.
 iterateDirectory :: (Monad m, MonadIO m)
     => FilePath         -- ^ Directory path
-    -> DB.DBConnection     -- ^ Database connection
+    -> DB.DBConnection  -- ^ Database connection
     -> Source m Entry   -- ^ Conduit source
 iterateDirectory x c = do
     runReaderC (IteratorConf c False) (iterateDirectory' x)
+
+--type IteratorConfM m = MonadReader IteratorConfiguration m
 
 -- Internal directory iterator
 iterateDirectory' :: (Monad m, MonadIO m, MonadReader IteratorConfiguration m)
@@ -86,7 +91,9 @@ iterateDirectory' x = do
                 Right t -> do
                     ret <- liftIO $ DB.isFileNewer c path t
                     sym <- liftIO $ pathIsSymbolicLink path
-                    unless ret . yield $ make path t sym
+                    case sym of
+                        True -> unless ret . yield $ Symlink path t symlink_empty
+                        False -> unless ret . yield $ make path t
             where
                 make | isDir     = Directory
                      | otherwise = File
