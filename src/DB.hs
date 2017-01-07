@@ -1,14 +1,16 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module DB
-    (connect,
+    (DBConnection,
+     connect,
      disconnect,
-     setup,
      verify,
      upgrade,
-     sqlSelectModtime,
-     sqlInsertFile,
      getVersion,
+     isFileNewer,
+     upsertFile,
+     insertFile,
+     transaction,
      version)
     where
 
@@ -16,24 +18,58 @@ import qualified Database.HDBC as HS
 import qualified Database.HDBC.Sqlite3 as HSD
 import Data.List
 import Control.Monad
+import Control.Monad.Reader
 import Control.Exception
+import Data.Maybe (isJust)
+import Data.Array
+import Data.Time.Clock
+import Control.Concurrent.MVar
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Builder as BSB
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteArray as BA
 
 import Logger
+import FileEntry
 
 type Connection = HSD.Connection
 
 logModule = "DB"
 
+-- array of prepare statement
+-- used by all functions,no more exposure of the statements themselves
+data DBConnection = DBC {
+        handle :: HSD.Connection,
+        statements :: Array Int (MVar HS.Statement)
+    }
+
 -- |Connect to the underlying SQL database
-connect :: FilePath -> IO HSD.Connection
+connect :: FilePath -> IO DBConnection
 connect x = do
     c <- HSD.connectSqlite3 x
     HS.quickQuery c "PRAGMA encoding = \"UTF-8\";" []
     --HS.quickQuery c "PRAGMA journal_mode=WAL;" []
-    return c
+    HS.runRaw c setupSQL
+    HS.commit c
+    prep_stmt <- mapM (\(a, s) -> do
+        m <- HS.prepare c s
+        s' <- newMVar m
+        return (a, s')) db_statements
+    return . DBC c $ array (0, length prep_stmt - 1) prep_stmt
 
-disconnect :: (HS.IConnection a) => a -> IO ()
-disconnect = HS.disconnect
+db_statements = [
+    -- get version
+    (0, "SELECT value FROM schema_info WHERE key='version';"),
+    -- check file in db based on modification time
+    (1, "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"),
+    -- insert a file
+    (2, "INSERT INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"),
+    -- all known paths
+    (3, "SELECT path, hash FROM file ORDER BY path"),
+    (4, "INSERT OR REPLACE INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)")]
+
+disconnect :: DBConnection -> IO ()
+disconnect (DBC c _) = HS.disconnect c
 
 -- |Database schema version
 version :: Int
@@ -45,8 +81,10 @@ setupSQL = intercalate "\n" [
     "CREATE TABLE IF NOT EXISTS file (",
     " path TEXT NOT NULL PRIMARY KEY,",
     " modificationTime INTEGER NOT NULL,",
-    " bhash BLOB,",
-    " hash BLOB",
+    " directory BOOLEAN NOT NULL,",
+    " symlink TEXT NULL,",
+    " bhash BLOB NULL,",
+    " hash BLOB NULL",
     ");",
     "CREATE TABLE IF NOT EXISTS schema_info (",
     " key TEXT NOT NULL PRIMARY KEY,",
@@ -54,8 +92,9 @@ setupSQL = intercalate "\n" [
     ");",
     "INSERT OR REPLACE INTO schema_info VALUES ('version', '"++show version++"');"]
 
-verify :: (HS.IConnection a) => a -> IO Bool
-verify c = do
+-- | Verfies that the database structure looks ok
+verify :: DBConnection -> IO Bool
+verify (DBC c _) = do
     debugM logModule "Fetch tables"
     s <- HS.prepare c "SELECT name FROM sqlite_master WHERE type='table'"
     HS.execute s []
@@ -66,13 +105,13 @@ verify c = do
     return $! all_tables_there
 
 -- Upgrades the schema
-upgrade :: (HS.IConnection a) => Int -> Int -> a -> IO String
-upgrade start end conn = return ""
+upgrade :: Int -> Int -> DBConnection -> IO ()
+upgrade start end conn = return ()
 
 -- |Returns the version of the database schema, if present.
 -- Will raise an error in case of failure.
-getVersion :: (HS.IConnection a) => a -> IO Int
-getVersion c = do
+getVersion :: DBConnection -> IO Int
+getVersion (DBC c _) = do
     s <- HS.prepare c "SELECT value FROM schema_info WHERE key='version';"
     HS.execute s []
     values <- HS.fetchAllRows s
@@ -80,34 +119,114 @@ getVersion c = do
         [[x]] -> return $! HS.fromSql x
         _     -> ioError . userError $ "Version fetching failed"
 
--- |Setup a database given a connection
-setup :: (HS.IConnection a) => a -> IO ()
-setup c = do
-    HS.runRaw c setupSQL
-    HS.commit c
-    return ()
-
-sqlSelectModtime :: HS.IConnection conn => conn -> IO HS.Statement
-sqlSelectModtime c = HS.prepare c
-    "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"
-
-sqlInsertFile :: HS.IConnection conn => conn -> IO HS.Statement
-sqlInsertFile c = HS.prepare c
-    "INSERT INTO file (path, modificationTime, bhash, hash) VALUES (?, ?, ?, ?)"
-
 sqlSelectAllKnownPaths :: HS.IConnection conn => conn -> IO HS.Statement
 sqlSelectAllKnownPaths c = HS.prepare c "SELECT path, hash FROM file SORT BY path"
+
+-- |Given a database, query index, and parameters it will perform the query
+-- and apply the function to all the returned rows
+withStatementAll :: (MonadIO m) => 
+       DBConnection              -- ^ Database connection
+    -> Int                       -- ^ Statement ID
+    -> [HS.SqlValue]             -- ^ Values to pass as input
+    -> ([[HS.SqlValue]] -> IO b) -- ^ All results sets lazily fetch are passed
+                                 --   to this function
+    -> m b                       -- ^ Returns the value in the source monad
+withStatementAll (DBC c ss) idx params f = assert (elem idx (indices ss)) $ do
+    liftIO . modifyMVar (ss ! idx) $ \stmt -> do
+        HS.execute stmt params
+        rows <- HS.fetchAllRows stmt
+        r <- f rows
+        return (stmt, r)
+
+-- |Given a database, query index, and parameters it will perform the query
+-- and apply the function to the first row only
+withStatement :: (MonadIO m) =>
+       DBConnection              -- ^ Database connection
+    -> Int                       -- ^ Statement ID
+    -> [HS.SqlValue]             -- ^ Values to pass as input
+    -> ((Maybe [HS.SqlValue]) -> IO b) -- The single result 
+    -> m b                       -- ^ Returns the value in the source monad
+withStatement (DBC c ss) idx params f = assert (elem idx (indices ss)) $ do
+    liftIO . modifyMVar (ss ! idx) $ \stmt -> do
+        HS.execute stmt params
+        row <- HS.fetchRow stmt
+        r <- f row
+        r' <- HS.fetchRow stmt
+        assert (r' == Nothing) (HS.finish stmt)
+        -- just in case there is more than one row
+        return (stmt, r)
+
+-- | Returns true if the path is newer that the informations stored in the
+-- database.
+isFileNewer :: (MonadIO m)
+    => DBConnection
+    -> FilePath     -- ^ Filepath
+    -> UTCTime      -- ^ Modification date
+    -> m Bool       -- ^ is newer?
+isFileNewer db path time =
+    withStatement db 1 [HS.SqlString path, HS.SqlUTCTime time] (\r -> do
+            return . isJust $ r)
+
+-- | Apply the Entry to any function passed to it to return a value
+applyAll :: [Entry -> HS.SqlValue] -> Entry -> [HS.SqlValue]
+applyAll xs e = map (\f -> f e) xs
+
+-- |Inserts or updates an Entry object in the database
+-- If it's an Error it's skipped, everything else is inserted in the database
+upsertFile :: (MonadIO m) =>
+       DBConnection -- ^ database connection
+    -> Entry        -- ^ Entry to store in the database
+    -> m ()
+upsertFile db entry@Error{} = return ()
+upsertFile db entry = do
+    withStatement db 4
+        (applyAll [HS.SqlString . entryPath,
+                   HS.SqlUTCTime . modificationTime,
+                   HS.SqlBool . isDirectory,
+                   getSymlinkOrNull,
+                   getFileBlobField blocks,
+                   getFileBlobField ((\x->[x]) . checksum)] entry)
+        (return . pure ())
+
+-- |Insert a Entry object in the database
+-- If it's an Error it's skipped, everything else is inserted in the database 
+insertFile :: (MonadIO m) =>
+       DBConnection -- ^ database connection
+    -> Entry        -- ^ Entry to store in the database
+    -> m ()
+insertFile db entry@Error{} = return ()
+insertFile db entry = do
+    withStatement db 2
+        (applyAll [HS.SqlString . entryPath,
+                   HS.SqlUTCTime . modificationTime,
+                   HS.SqlBool . isDirectory,
+                   getSymlinkOrNull,
+                   getFileBlobField blocks,
+                   getFileBlobField ((\x->[x]) . checksum)] entry)
+        (return . pure ())
+
+getSymlinkOrNull :: Entry -> HS.SqlValue
+getSymlinkOrNull e@Symlink{} = HS.SqlString . target $ e
+getSymlinkOrNull _ = HS.SqlNull
+
+getFileBlobField :: (Entry -> [FileDigest]) -> Entry -> HS.SqlValue
+getFileBlobField f e@ChecksumFile{} = HS.SqlByteString $ BL.toStrict $ BSB.toLazyByteString $
+    foldMap (BSB.byteString . BA.convert) . f $ e
+getFileBlobField _ _ = HS.SqlNull
 
 -- | Execute a safe SQL Transaction
 -- In case of error it will do a rollback, will execute a commit if there are no
 -- errors
-sqlTransaction :: HS.IConnection conn
-    => conn             -- ^ Connection
-    -> (conn -> IO a)   -- ^ Transaction function
+transaction ::
+       DBConnection    -- ^ Connection
+    -> (DBConnection -> IO a)   -- ^ Transaction function
     -> IO a             -- ^ Result
-sqlTransaction c f =
+transaction db@(DBC c _) f =
     bracketOnError
         (HS.quickQuery c "BEGIN TRANSACTION" [])
         (\_ -> HS.quickQuery c "ROLLBACK" [])
-        (\_ -> f c >>= (\x -> HS.quickQuery c "COMMIT" [] >> return x))
+        (\_ -> do
+            x <- f db
+            HS.quickQuery c "COMMIT" []
+            return x)
 

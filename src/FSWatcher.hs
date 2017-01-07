@@ -1,11 +1,10 @@
-{-# LANGUAGE FlexibleContexts #-}
-
 module FSWatcher (
         iterateDirectory,
         Entry(..),
         filterErrors,
         findDiffs,
-        testFS
+        testFS,
+        module FileEntry
         ) where
 
 import Control.Exception
@@ -16,7 +15,6 @@ import Data.Array
 import Data.Conduit
 import Data.Conduit.Lift
 import Data.Int
-import Data.Maybe (isJust)
 import Data.Time.Clock
 import System.Directory
 import System.IO
@@ -27,75 +25,47 @@ import qualified Database.HDBC as HS
 
 import qualified DB
 import Logger
+import FileEntry
 
 logModule = "FSW"
-
-type FileDigest = Digest MD5
-
--- Type returned from a Conduit looking for all files an directories
-data Entry = File {
-        entryPath :: String,
-        modificationTime :: UTCTime,
-        isSymlink :: Bool
-    }
-           | ChecksumFile {
-        entryPath :: String,
-        modificationTime :: UTCTime,
-        isSymlink :: Bool,
-        checksum :: FileDigest,
-        blocks :: [FileDigest]
-    }
-           | Directory {
-        entryPath :: String,
-        modificationTime :: UTCTime,
-        isSymlink :: Bool
-   }
-           | Error {
-        entryPath :: String,
-        exception :: String
-    }
-    deriving (Show, Eq)
-
-instance Ord Entry where
-    a <= b = entryPath a <= entryPath b
 
 data Comparison a = NewLeft a
                   | NewRight a
                   | Collision a a
     deriving (Show)
 
-addChecksum :: Entry -> FileDigest -> [FileDigest] -> Entry
-addChecksum (File a b c) total blocks = ChecksumFile a b c total blocks
-addChecksum _ _ _ = error "Add Checksum to wrong entry type"
-
 data IteratorConfiguration = IteratorConf {
-        sqlSearch :: HS.Statement,
-        followSymlink :: Bool
+        connection :: DB.DBConnection,
+        followSymlink :: Bool -- currently always false
     }
 
 dbHashBlockSize = 128*1024 :: Int64
 
+-- TODO must be replaced with a function get the symlink path
+symlink_empty = ""
+
 -- | Iterate a path and given a Database connection will return all the modified
 -- entries.
-iterateDirectory :: (Monad m, MonadIO m, HS.IConnection c)
+iterateDirectory :: (Monad m, MonadIO m)
     => FilePath         -- ^ Directory path
-    -> c                -- ^ Database connection
+    -> DB.DBConnection  -- ^ Database connection
     -> Source m Entry   -- ^ Conduit source
-iterateDirectory x c = do
-    statement <- liftIO $ DB.sqlSelectModtime c
-    runReaderC (IteratorConf statement False) (iterateDirectory' x)
+iterateDirectory x c = iterateDirectory' x (IteratorConf c False)
 
 -- Internal directory iterator
-iterateDirectory' :: (Monad m, MonadIO m, MonadReader IteratorConfiguration m)
+iterateDirectory' :: (Monad m, MonadIO m)
     => FilePath         -- ^ File path
+    -> IteratorConfiguration
     -> Source m Entry   -- ^ Sources of Entry
-iterateDirectory' x = do
-    send x True
-    entries <- liftIO . tryIOError $ getDirectoryContents x
-    case entries of
-        Left e -> yield $ Error x $ displayException e
-        Right l -> mapM_ recurse l
+iterateDirectory' x conf = go x
     where
+        go x = do
+            send x True
+            entries <- liftIO . tryIOError $ getDirectoryContents x
+            case entries of
+                Left e -> yield $ Error x $ displayException e
+                Right l -> mapM_ recurse l
+
         -- filter out special paths
         recurse "." = return ()
         recurse ".." = return ()
@@ -107,7 +77,7 @@ iterateDirectory' x = do
 
         test dest isFile isDir | isFile == isDir = return () -- doesn't exist
                                | isFile          = send dest False
-                               | isDir           = iterateDirectory' dest
+                               | isDir           = go dest
 
         -- Send will read the modification date. If not possible will mark
         -- the Entry as error
@@ -116,24 +86,14 @@ iterateDirectory' x = do
             case modTime of
                 Left e -> yield $ Error path $ displayException e
                 Right t -> do
-                    ret <- checkDate path t
+                    ret <- liftIO $ DB.isFileNewer (connection conf) path t
                     sym <- liftIO $ pathIsSymbolicLink path
-                    unless ret . yield $ make path t sym
+                    case sym of
+                        True -> unless ret . yield $ Symlink path t symlink_empty
+                        False -> unless ret . yield $ make path t
             where
                 make | isDir     = Directory
                      | otherwise = File
-
--- | Returns true if the path is newer that the informations stored in the
--- database.
-checkDate :: (MonadIO m, MonadReader IteratorConfiguration m)
-    => FilePath     -- ^ Filepath
-    -> UTCTime      -- ^ Modification date
-    -> m Bool       -- ^ is newer?
-checkDate path time = do
-    s <- ask
-    liftIO $ HS.execute (sqlSearch s) [HS.SqlString $! path, HS.SqlUTCTime $! time]
-    m <- liftIO . HS.fetchRow .sqlSearch $ s
-    return . isJust $ m
 
 filterErrors :: (Monad m, MonadIO m) => Conduit Entry m Entry
 filterErrors = awaitForever match
@@ -213,7 +173,6 @@ findDiffs s1 s2 = do
 
 testFS = do
     c <- DB.connect "test.db"
-    DB.setup c
     b <- DB.verify c
     unless b $ error "db corrupted"
     -- should not use filterInfo, hashing can change an Info to an Error
