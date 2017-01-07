@@ -14,7 +14,7 @@ import Data.Time.Clock
 import qualified FSWatcher as FS
 import MyArbitrary
 
-fromPath p t = FS.File p t False
+fromPath p t = FS.File p t
 
 allDiff [] = True
 allDiff [_] = True
