@@ -10,6 +10,7 @@ module DB
      isFileNewer,
      upsertFile,
      insertFile,
+     transaction,
      version)
     where
 
@@ -216,13 +217,16 @@ getFileBlobField _ _ = HS.SqlNull
 -- | Execute a safe SQL Transaction
 -- In case of error it will do a rollback, will execute a commit if there are no
 -- errors
-sqlTransaction :: HS.IConnection conn
-    => conn             -- ^ Connection
-    -> (conn -> IO a)   -- ^ Transaction function
+transaction ::
+       DBConnection    -- ^ Connection
+    -> (DBConnection -> IO a)   -- ^ Transaction function
     -> IO a             -- ^ Result
-sqlTransaction c f =
+transaction db@(DBC c _) f =
     bracketOnError
         (HS.quickQuery c "BEGIN TRANSACTION" [])
         (\_ -> HS.quickQuery c "ROLLBACK" [])
-        (\_ -> f c >>= (\x -> HS.quickQuery c "COMMIT" [] >> return x))
+        (\_ -> do
+            x <- f db
+            HS.quickQuery c "COMMIT" []
+            return x)
 
