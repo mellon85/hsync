@@ -24,8 +24,10 @@ import Data.Array
 import Data.Time.Clock
 import Control.Concurrent.MVar
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Builder as BSB
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.ByteArray as BA
 
-import HashUtils
 import Logger
 import FileEntry
 
@@ -170,10 +172,10 @@ applyAll xs e = map (\f -> f e) xs
 
 -- |Inserts or updates an Entry object in the database
 -- If it's an Error it's skipped, everything else is inserted in the database
-upsertFile ::
+upsertFile :: (MonadIO m) =>
        DBConnection -- ^ database connection
     -> Entry        -- ^ Entry to store in the database
-    -> IO ()
+    -> m ()
 upsertFile db entry@Error{} = return ()
 upsertFile db entry = do
     withStatement db 4
@@ -182,14 +184,15 @@ upsertFile db entry = do
                    HS.SqlBool . isDirectory,
                    getSymlinkOrNull,
                    getFileBlobField blocks,
-                   getFileBlobField checksum] entry) (return ())
+                   getFileBlobField ((\x->[x]) . checksum)] entry)
+        (return . pure ())
 
 -- |Insert a Entry object in the database
 -- If it's an Error it's skipped, everything else is inserted in the database 
-insertFile ::
+insertFile :: (MonadIO m) =>
        DBConnection -- ^ database connection
     -> Entry        -- ^ Entry to store in the database
-    -> IO ()
+    -> m ()
 insertFile db entry@Error{} = return ()
 insertFile db entry = do
     withStatement db 2
@@ -197,16 +200,18 @@ insertFile db entry = do
                    HS.SqlUTCTime . modificationTime,
                    HS.SqlBool . isDirectory,
                    getSymlinkOrNull,
-                   getFileBlobField ((\x->[x]) . blocks),
-                   getFileBlobField checksum] entry) (return ())
+                   getFileBlobField blocks,
+                   getFileBlobField ((\x->[x]) . checksum)] entry)
+        (return . pure ())
 
 getSymlinkOrNull :: Entry -> HS.SqlValue
 getSymlinkOrNull e@Symlink{} = HS.SqlString . target $ e
 getSymlinkOrNull _ = HS.SqlNull
 
-getFileBlobField :: (Entry -> FileDigest) -> Entry -> HS.SqlValue
-getFileBlobField f e@ChecksumFile{} = HS.SqlByteString .  digest2bytestring . f $ e
-getFileBlobField _ = HS.SqlNull
+getFileBlobField :: (Entry -> [FileDigest]) -> Entry -> HS.SqlValue
+getFileBlobField f e@ChecksumFile{} = HS.SqlByteString $ BL.toStrict $ BSB.toLazyByteString $
+    foldMap (BSB.byteString . BA.convert) . f $ e
+getFileBlobField _ _ = HS.SqlNull
 
 -- | Execute a safe SQL Transaction
 -- In case of error it will do a rollback, will execute a commit if there are no
