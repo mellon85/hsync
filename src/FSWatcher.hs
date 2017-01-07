@@ -1,5 +1,3 @@
-{-# LANGUAGE FlexibleContexts #-}
-
 module FSWatcher (
         iterateDirectory,
         Entry(..),
@@ -52,22 +50,22 @@ iterateDirectory :: (Monad m, MonadIO m)
     => FilePath         -- ^ Directory path
     -> DB.DBConnection  -- ^ Database connection
     -> Source m Entry   -- ^ Conduit source
-iterateDirectory x c = do
-    runReaderC (IteratorConf c False) (iterateDirectory' x)
-
---type IteratorConfM m = MonadReader IteratorConfiguration m
+iterateDirectory x c = iterateDirectory' x (IteratorConf c False)
 
 -- Internal directory iterator
-iterateDirectory' :: (Monad m, MonadIO m, MonadReader IteratorConfiguration m)
+iterateDirectory' :: (Monad m, MonadIO m)
     => FilePath         -- ^ File path
+    -> IteratorConfiguration
     -> Source m Entry   -- ^ Sources of Entry
-iterateDirectory' x = do
-    send x True
-    entries <- liftIO . tryIOError $ getDirectoryContents x
-    case entries of
-        Left e -> yield $ Error x $ displayException e
-        Right l -> mapM_ recurse l
+iterateDirectory' x conf = go x
     where
+        go x = do
+            send x True
+            entries <- liftIO . tryIOError $ getDirectoryContents x
+            case entries of
+                Left e -> yield $ Error x $ displayException e
+                Right l -> mapM_ recurse l
+
         -- filter out special paths
         recurse "." = return ()
         recurse ".." = return ()
@@ -79,17 +77,16 @@ iterateDirectory' x = do
 
         test dest isFile isDir | isFile == isDir = return () -- doesn't exist
                                | isFile          = send dest False
-                               | isDir           = iterateDirectory' dest
+                               | isDir           = go dest
 
         -- Send will read the modification date. If not possible will mark
         -- the Entry as error
         send path isDir = do
             modTime <- liftIO . tryIOError $ getModificationTime path
-            c <- ask  >>= return . connection
             case modTime of
                 Left e -> yield $ Error path $ displayException e
                 Right t -> do
-                    ret <- liftIO $ DB.isFileNewer c path t
+                    ret <- liftIO $ DB.isFileNewer (connection conf) path t
                     sym <- liftIO $ pathIsSymbolicLink path
                     case sym of
                         True -> unless ret . yield $ Symlink path t symlink_empty
