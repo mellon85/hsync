@@ -217,7 +217,7 @@ transaction ::
        DBConnection    -- ^ Connection
     -> (DBConnection -> IO a)   -- ^ Transaction function
     -> IO a             -- ^ Result
-transaction db@(DBC c) f =
+transaction db f = let c = dbhandle db in
     bracketOnError
         (HS.quickQuery c "BEGIN TRANSACTION" [])
         (\_ -> HS.quickQuery c "ROLLBACK" [])
