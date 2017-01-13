@@ -26,6 +26,8 @@ import Control.Concurrent.MVar
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteArray as BA
+import qualified Data.Map.Strict as M
+import Data.Map.Strict ((!))
 
 import Logger
 import FileEntry
@@ -37,7 +39,7 @@ logModule = "DB"
 -- array of prepare statement
 -- used by all functions,no more exposure of the statements themselves
 data DBConnection = DBC {
-        handle :: HSD.Connection
+        dbhandle :: HSD.Connection
     }
 
 -- |Connect to the underlying SQL database
@@ -48,13 +50,9 @@ connect x = do
     --HS.quickQuery c "PRAGMA journal_mode=WAL;" []
     HS.runRaw c setupSQL
     HS.commit c
-    mapM_ (\(a, s) -> do
-        m <- HS.prepare c s
-        s' <- newMVar m
-        return (a, s')) db_statements
     return $ DBC c
 
-db_statements = [
+db_statements = M.fromList [
     -- get version
     (0, "SELECT value FROM schema_info WHERE key='version';"),
     -- check file in db based on modification time
@@ -67,7 +65,7 @@ db_statements = [
     (5, "SELECT path, hash FROM file SORT BY path")]
 
 disconnect :: DBConnection -> IO ()
-disconnect = HS.disconnect . handle
+disconnect = HS.disconnect . dbhandle
 
 -- |Database schema version
 version :: Int
@@ -94,7 +92,7 @@ setupSQL = intercalate "\n" [
 verify :: DBConnection -> IO Bool
 verify c = do
     debugM logModule "Fetch tables"
-    s <- HS.prepare (handle c) "SELECT name FROM sqlite_master WHERE type='table'"
+    s <- HS.prepare (dbhandle c) "SELECT name FROM sqlite_master WHERE type='table'"
     HS.execute s []
     tables <- (map HS.fromSql . concat <$> HS.fetchAllRows s) :: IO [String]
     debugM logModule $ "Found tables " ++ show tables
@@ -110,7 +108,7 @@ upgrade start end conn = return ()
 -- Will raise an error in case of failure.
 getVersion :: DBConnection -> IO Int
 getVersion c = do
-    s <- HS.prepare (handle c) "SELECT value FROM schema_info WHERE key='version';"
+    s <- HS.prepare (dbhandle c) "SELECT value FROM schema_info WHERE key='version';"
     HS.execute s []
     values <- HS.fetchAllRows s
     case values of
@@ -118,7 +116,7 @@ getVersion c = do
         _     -> ioError . userError $ "Version fetching failed"
 
 allPaths :: DBConnection -> IO HS.Statement
-allPaths c = HS.prepare c "SELECT path, hash FROM file SORT BY path"
+allPaths c = HS.prepare (dbhandle c) "SELECT path, hash FROM file SORT BY path"
 
 -- |Given a database, query index, and parameters it will perform the query
 -- and apply the function to all the returned rows
@@ -129,12 +127,12 @@ withStatementAll :: (MonadIO m) =>
     -> ([[HS.SqlValue]] -> m b) -- ^ All results sets lazily fetch are passed
                                  --   to this function
     -> m b                       -- ^ Returns the value in the source monad
-withStatementAll c idx params f = assert (elem idx (indices ss)) $ do
-    stmt <- liftIO $ HS.prepare idx
+withStatementAll c idx params f = do
+    stmt <- liftIO . HS.prepare (dbhandle c) $ db_statements ! idx
     liftIO $ HS.execute stmt params
     rows <- liftIO $ HS.fetchAllRows stmt
     r <- f rows
-    return (stmt, r)
+    return r
 
 -- |Given a database, query index, and parameters it will perform the query
 -- and apply the function to the first row only
@@ -144,13 +142,13 @@ withStatement :: (MonadIO m) =>
     -> [HS.SqlValue]             -- ^ Values to pass as input
     -> ((Maybe [HS.SqlValue]) -> m b) -- The single result
     -> m b                       -- ^ Returns the value in the source monad
-withStatement c idx params f = assert (elem idx (indices ss)) $ do
-    stmt <- liftIO $ HS.prepare idx
+withStatement c idx params f = do
+    stmt <- liftIO $ HS.prepare (dbhandle c) $ db_statements ! idx
     liftIO $ HS.execute stmt params
     row <- liftIO $ HS.fetchRow stmt
     r <- f row
     r' <- liftIO $ HS.fetchRow stmt
-    assert (r' == Nothing) (HS.finish stmt)
+    assert (r' == Nothing) (liftIO $ HS.finish stmt)
     -- just in case there is more than one row
     return r
 
@@ -219,7 +217,7 @@ transaction ::
        DBConnection    -- ^ Connection
     -> (DBConnection -> IO a)   -- ^ Transaction function
     -> IO a             -- ^ Result
-transaction db@(DBC c _) f =
+transaction db@(DBC c) f =
     bracketOnError
         (HS.quickQuery c "BEGIN TRANSACTION" [])
         (\_ -> HS.quickQuery c "ROLLBACK" [])
