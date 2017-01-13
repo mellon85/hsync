@@ -9,6 +9,7 @@ import qualified Database.HDBC as HS
 import Data.Maybe (isJust)
 
 import Data.ByteString
+import FileEntry
 import Data.Time.Clock
 import qualified Data.Set as Set
 
@@ -41,26 +42,29 @@ prop_isFileNewer_empty path time = monadicIO $ do
         return v
     assert v
 
-{-
--- TODO add fake datasets
-prop_insertFiles dataset = monadicIO $ do
+prop_insertFile entry = monadicIO $ do
     v <- run $ do
-        files <- arbitrary `suchThat` nodups -- `suchThat` ((>0) . Prelude.length)
         db <- D.connect ":memory:"
-        D.setup db
-        --insertFiles db dataset
-        --v <- return . (==False). isJust $ m
+        D.insertFile db entry
         D.disconnect db
         return True
     assert v
 
-nodups :: Ord a => [a] -> Bool
-nodups = nodups' Set.empty where
-  nodups' _ [] = True
-  nodups' a (b : c) = not (Set.member b a) && nodups' (Set.insert b a) c
+prop_insertFiles files = nodups files ==> monadicIO $ do
+    v <- run $ do
+        db <- D.connect ":memory:"
+        mapM_ (D.insertFile db) files
+        D.disconnect db
+        return True
+    assert v
 
-
--}
+nodups :: [Entry] -> Bool
+nodups = nodups' Set.empty Set.empty
+    where
+    nodups' _ _ [] = True
+    nodups' a p (b : c) = not (Set.member b a)
+                     && not (Set.member (entryPath b) p)
+                     && nodups' (Set.insert b a) (Set.insert (entryPath b) p) c
 
 return []
 runTests = $quickCheckAll
