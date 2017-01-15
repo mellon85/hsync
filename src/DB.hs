@@ -28,6 +28,7 @@ import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteArray as BA
 import qualified Data.Map.Strict as M
 import Data.Map.Strict ((!))
+import Crypto.Hash (digestFromByteString)
 
 import Logger
 import FileEntry
@@ -206,8 +207,7 @@ getSymlinkOrNull e@Symlink{} = HS.SqlString . target $ e
 getSymlinkOrNull _ = HS.SqlNull
 
 getFileBlobField :: (Entry -> [FileDigest]) -> Entry -> HS.SqlValue
-getFileBlobField f e@ChecksumFile{} = HS.SqlByteString . BL.toStrict .
-                        BL.fromChunks . map BA.convert . f $ e
+getFileBlobField f e@ChecksumFile{} = HS.SqlByteString . serializeHashes . f $ e
 getFileBlobField _ _ = HS.SqlNull
 
 -- | Execute a safe SQL Transaction
@@ -225,4 +225,16 @@ transaction db f = let c = dbhandle db in
             x <- f db
             HS.quickQuery c "COMMIT" []
             return x)
+
+serializeHashes :: [FileDigest] -> BS.ByteString
+serializeHashes = BL.toStrict . BL.fromChunks . map BA.convert
+
+deserializeHashes :: BS.ByteString -> [FileDigest]
+deserializeHashes hashes = go $ BS.splitAt block hashes
+    where
+        block = 64
+        go (h, r) | BS.length h == 0 = []
+                  | otherwise        = case digestFromByteString h of
+                        Just d -> d : go (BS.splitAt block r)
+                        _      -> []
 
