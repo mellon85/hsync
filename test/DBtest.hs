@@ -8,7 +8,7 @@ import MyArbitrary
 import qualified Database.HDBC as HS
 import Data.Maybe (isJust)
 
-import Data.ByteString
+import Data.ByteString hiding(all)
 import FileEntry
 import Data.Time.Clock
 import qualified Data.Set as Set
@@ -42,20 +42,13 @@ prop_isFileNewer_empty path time = monadicIO $ do
         return v
     assert v
 
-prop_insertFile entry = monadicIO $ do
+prop_insertFile entry = all (not . isError) entry ==> monadicIO $ do
     v <- run $ do
         db <- D.connect ":memory:"
         D.insertFile db entry
         D.disconnect db
         return True
-    assert v
-
-prop_insertFiles files = nodups files ==> monadicIO $ do
-    v <- run $ do
-        db <- D.connect ":memory:"
-        mapM_ (D.insertFile db) files
-        D.disconnect db
-        return True
+        -- @TODO retrieve all and check data is identical
     assert v
 
 nodups :: [Entry] -> Bool
