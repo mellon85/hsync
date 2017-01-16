@@ -214,17 +214,10 @@ getFileBlobField _ _ = HS.SqlNull
 -- In case of error it will do a rollback, will execute a commit if there are no
 -- errors
 transaction ::
-       DBConnection    -- ^ Connection
+       DBConnection     -- ^ Connection
     -> (DBConnection -> IO a)   -- ^ Transaction function
     -> IO a             -- ^ Result
-transaction db f = let c = dbhandle db in
-    bracketOnError
-        (HS.quickQuery c "BEGIN TRANSACTION" [])
-        (\_ -> HS.quickQuery c "ROLLBACK" [])
-        (\_ -> do
-            x <- f db
-            HS.quickQuery c "COMMIT" []
-            return x)
+transaction db f = HS.withTransaction (dbhandle db) (\_ -> f db)
 
 serializeHashes :: [FileDigest] -> BS.ByteString
 serializeHashes = BL.toStrict . BL.fromChunks . map BA.convert
