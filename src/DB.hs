@@ -26,8 +26,6 @@ import Control.Concurrent.MVar
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteArray as BA
-import qualified Data.Map.Strict as M
-import Data.Map.Strict ((!))
 import Crypto.Hash (digestFromByteString)
 
 import Logger
@@ -53,17 +51,16 @@ connect x = do
     HS.commit c
     return $ DBC c
 
+{-
 db_statements = M.fromList [
     -- get version
     (0, "SELECT value FROM schema_info WHERE key='version';"),
     -- check file in db based on modification time
-    (1, "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"),
     -- insert a file
-    (2, "INSERT INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"),
     -- all known paths
     (3, "SELECT path, hash FROM file ORDER BY path"),
-    (4, "INSERT OR REPLACE INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"),
     (5, "SELECT path, hash FROM file SORT BY path")]
+-}
 
 disconnect :: DBConnection -> IO ()
 disconnect = HS.disconnect . dbhandle
@@ -93,9 +90,7 @@ setupSQL = intercalate "\n" [
 verify :: DBConnection -> IO Bool
 verify c = do
     debugM logModule "Fetch tables"
-    s <- HS.prepare (dbhandle c) "SELECT name FROM sqlite_master WHERE type='table'"
-    HS.execute s []
-    tables <- (map HS.fromSql . concat <$> HS.fetchAllRows s) :: IO [String]
+    tables <- HS.getTables (dbhandle c)
     debugM logModule $ "Found tables " ++ show tables
     let all_tables_there = elem "file" tables && elem "schema_info" tables
     debugM logModule $ "All tables: " ++ show all_tables_there
@@ -123,13 +118,13 @@ allPaths c = HS.prepare (dbhandle c) "SELECT path, hash FROM file SORT BY path"
 -- and apply the function to all the returned rows
 withStatementAll :: (MonadIO m) =>
        DBConnection              -- ^ Database connection
-    -> Int                       -- ^ Statement ID
+    -> String                    -- ^ Statement
     -> [HS.SqlValue]             -- ^ Values to pass as input
-    -> ([[HS.SqlValue]] -> m b) -- ^ All results sets lazily fetch are passed
+    -> ([[HS.SqlValue]] -> m b)  -- ^ All results sets lazily fetch are passed
                                  --   to this function
     -> m b                       -- ^ Returns the value in the source monad
-withStatementAll c idx params f = do
-    stmt <- liftIO . HS.prepare (dbhandle c) $ db_statements ! idx
+withStatementAll c sql params f = do
+    stmt <- liftIO $ HS.prepare (dbhandle c) sql
     liftIO $ HS.execute stmt params
     rows <- liftIO $ HS.fetchAllRows stmt
     r <- f rows
@@ -139,12 +134,12 @@ withStatementAll c idx params f = do
 -- and apply the function to the first row only
 withStatement :: (MonadIO m) =>
        DBConnection              -- ^ Database connection
-    -> Int                       -- ^ Statement ID
+    -> String                    -- ^ Statement
     -> [HS.SqlValue]             -- ^ Values to pass as input
     -> ((Maybe [HS.SqlValue]) -> m b) -- The single result
     -> m b                       -- ^ Returns the value in the source monad
-withStatement c idx params f = do
-    stmt <- liftIO $ HS.prepare (dbhandle c) $ db_statements ! idx
+withStatement c sql params f = do
+    stmt <- liftIO $ HS.prepare (dbhandle c) sql
     liftIO $ HS.execute stmt params
     row <- liftIO $ HS.fetchRow stmt
     r <- f row
@@ -152,6 +147,15 @@ withStatement c idx params f = do
     assert (r' == Nothing) (liftIO $ HS.finish stmt)
     -- just in case there is more than one row
     return r
+
+withStatementMany :: (MonadIO m) =>
+       DBConnection              -- ^ Database connection
+    -> String                    -- ^ Statement
+    -> [[HS.SqlValue]]           -- ^ Values to pass as input
+    -> m ()                      -- ^ Returns the value in the source monad
+withStatementMany db sql params = do
+    stmt <- liftIO $ HS.prepare (dbhandle db) sql
+    liftIO $ HS.executeMany stmt params
 
 -- | Returns true if the path is newer that the informations stored in the
 -- database.
@@ -161,7 +165,9 @@ isFileNewer :: (MonadIO m)
     -> UTCTime      -- ^ Modification date
     -> m Bool       -- ^ is newer?
 isFileNewer db path time =
-    withStatement db 1 [HS.SqlString path, HS.SqlUTCTime time] (\r -> do
+    withStatement db
+        "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"
+        [HS.SqlString path, HS.SqlUTCTime time] (\r -> do
             return . isJust $ r)
 
 -- | Apply the Entry to any function passed to it to return a value
@@ -176,7 +182,8 @@ upsertFile :: (MonadIO m) =>
     -> m ()
 upsertFile db entry@Error{} = return ()
 upsertFile db entry = do
-    withStatement db 4
+    withStatement db
+        "INSERT OR REPLACE INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"
         (applyAll [HS.SqlString . entryPath,
                    HS.SqlUTCTime . modificationTime,
                    HS.SqlBool . isDirectory,
@@ -189,18 +196,11 @@ upsertFile db entry = do
 -- If it's an Error it's skipped, everything else is inserted in the database
 insertFile :: (MonadIO m) =>
        DBConnection -- ^ database connection
-    -> Entry        -- ^ Entry to store in the database
+    -> [Entry]      -- ^ Entry to store in the database
     -> m ()
-insertFile db entry@Error{} = return ()
-insertFile db entry = do
-    withStatement db 2
-        (applyAll [HS.SqlString . entryPath,
-                   HS.SqlUTCTime . modificationTime,
-                   HS.SqlBool . isDirectory,
-                   getSymlinkOrNull,
-                   getFileBlobField blocks,
-                   getFileBlobField ((\x->[x]) . checksum)] entry)
-        (return . pure ())
+insertFile db entries = withStatementMany db
+    "INSERT INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"
+    . map entryToSql . filter isError $ entries
 
 getSymlinkOrNull :: Entry -> HS.SqlValue
 getSymlinkOrNull e@Symlink{} = HS.SqlString . target $ e
@@ -238,3 +238,10 @@ deserializeHashes hashes = go $ BS.splitAt block hashes
                         Just d -> d : go (BS.splitAt block r)
                         _      -> []
 
+entryToSql = applyAll [
+    HS.SqlString . entryPath,
+    HS.SqlUTCTime . modificationTime,
+    HS.SqlBool . isDirectory,
+    getSymlinkOrNull,
+    getFileBlobField blocks,
+    getFileBlobField ((\x->[x]) . checksum)]

@@ -3,12 +3,12 @@ module FileEntry (
         FileDigest,
         isDirectory,
         isSymlink,
+        isError,
         addChecksum
     ) where
 
 import Crypto.Hash
 import Data.Time.Clock
-
 
 type FileDigest = Digest MD5
 
@@ -49,7 +49,10 @@ isSymlink :: Entry -> Bool
 isSymlink entry@Symlink{} = True
 isSymlink _ = False
 
+isError :: Entry -> Bool
+isError entry@Error{} = True
+isError _ = False
+
 addChecksum :: Entry -> FileDigest -> [FileDigest] -> Entry
 addChecksum (File a b) total blocks = ChecksumFile a b total blocks
 addChecksum _ _ _  = error "Add Checksum to wrong entry type"
-
