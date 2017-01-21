@@ -42,10 +42,23 @@ prop_isFileNewer_empty path time = monadicIO $ do
         return v
     assert v
 
-prop_insertFile entry = all (not . isError) entry ==> monadicIO $ do
+prop_insertFile entry = nodups entry ==> monadicIO $ do
     v <- run $ do
         db <- D.connect ":memory:"
         D.insertFile db entry
+        D.disconnect db
+        return True
+        -- @TODO retrieve all and check data is identical
+    assert v
+
+prop_upsertFile entry = nodups entry ==> monadicIO $ do
+    v <- run $ do
+        db <- D.connect ":memory:"
+        D.upsertFile db entry
+        -- @TODO count how many entries are in the DB
+        -- check that data can be overwriten without error
+        D.upsertFile db entry
+        -- @TODO count how many entries are in the DB and compare them
         D.disconnect db
         return True
         -- @TODO retrieve all and check data is identical
