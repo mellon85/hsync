@@ -10,6 +10,7 @@ module DB
      isFileNewer,
      upsertFile,
      insertFile,
+     allPaths,
      transaction,
      version)
     where
@@ -20,8 +21,10 @@ import Data.List
 import Control.Monad
 import Control.Monad.Reader
 import Control.Exception
+import Control.Monad.Trans.Resource
 import Data.Maybe (isJust)
 import Data.Time.Clock
+import Data.Conduit hiding (connect)
 import Control.Concurrent.MVar
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
@@ -50,17 +53,6 @@ connect x = do
     HS.runRaw c setupSQL
     HS.commit c
     return $ DBC c
-
-{-
-db_statements = M.fromList [
-    -- get version
-    (0, "SELECT value FROM schema_info WHERE key='version';"),
-    -- check file in db based on modification time
-    -- insert a file
-    -- all known paths
-    (3, "SELECT path, hash FROM file ORDER BY path"),
-    (5, "SELECT path, hash FROM file SORT BY path")]
--}
 
 disconnect :: DBConnection -> IO ()
 disconnect = HS.disconnect . dbhandle
@@ -111,8 +103,6 @@ getVersion c = do
         [[x]] -> return $! HS.fromSql x
         _     -> ioError . userError $ "Version fetching failed"
 
-allPaths :: DBConnection -> IO HS.Statement
-allPaths c = HS.prepare (dbhandle c) "SELECT path, hash FROM file SORT BY path"
 
 -- |Given a database, query index, and parameters it will perform the query
 -- and apply the function to all the returned rows
@@ -128,6 +118,7 @@ withStatementAll c sql params f = do
     liftIO $ HS.execute stmt params
     rows <- liftIO $ HS.fetchAllRows stmt
     r <- f rows
+    liftIO $ HS.commit (dbhandle c)
     return r
 
 -- |Given a database, query index, and parameters it will perform the query
@@ -145,6 +136,7 @@ withStatement c sql params f = do
     r <- f row
     r' <- liftIO $ HS.fetchRow stmt
     assert (r' == Nothing) (liftIO $ HS.finish stmt)
+    liftIO $ HS.commit (dbhandle c)
     -- just in case there is more than one row
     return r
 
@@ -156,6 +148,7 @@ withStatementMany :: (MonadIO m) =>
 withStatementMany db sql params = do
     stmt <- liftIO $ HS.prepare (dbhandle db) sql
     liftIO $ HS.executeMany stmt params
+    liftIO $ HS.commit (dbhandle db)
 
 -- | Returns true if the path is newer that the informations stored in the
 -- database.
@@ -191,6 +184,22 @@ insertFile db entries = withStatementMany db
     "INSERT INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"
     . map entryToSql . filter (not . isError) $ entries
 
+allPaths :: (Monad m, MonadIO m) =>
+        DBConnection
+     -> Source m (BS.ByteString)
+allPaths db = do
+    stmt <- liftIO $ HS.prepare (dbhandle db)
+                "SELECT path FROM file ORDER BY path"
+    liftIO $ HS.execute stmt []
+    loop stmt
+    where
+        loop stmt = do
+            row <- liftIO $ HS.fetchRow stmt
+            case row of
+                Nothing     -> return ()
+                Just [path] -> do yield (HS.fromSql path :: BS.ByteString)
+                                  loop stmt
+
 getSymlinkOrNull :: Entry -> HS.SqlValue
 getSymlinkOrNull e@Symlink{} = HS.SqlString . target $ e
 getSymlinkOrNull _ = HS.SqlNull
@@ -220,6 +229,7 @@ deserializeHashes hashes = go $ BS.splitAt block hashes
                         Just d -> d : go (BS.splitAt block r)
                         _      -> []
 
+entryToSql :: Entry -> [HS.SqlValue]
 entryToSql = applyAll [
     HS.SqlString . entryPath,
     HS.SqlUTCTime . modificationTime,
@@ -231,3 +241,4 @@ entryToSql = applyAll [
         -- | Apply the Entry to any function passed to it to return a value
         applyAll :: [Entry -> HS.SqlValue] -> Entry -> [HS.SqlValue]
         applyAll xs e = map (\f -> f e) xs
+

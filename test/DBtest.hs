@@ -8,10 +8,13 @@ import MyArbitrary
 import qualified Database.HDBC as HS
 import Data.Maybe (isJust)
 
-import Data.ByteString hiding(all)
+import qualified Data.ByteString as BS
 import FileEntry
 import Data.Time.Clock
 import qualified Data.Set as Set
+import qualified Data.Conduit as C
+import Control.Monad.Trans.Resource (runResourceT)
+
 
 -- testing
 import Test.QuickCheck
@@ -42,27 +45,34 @@ prop_isFileNewer_empty path time = monadicIO $ do
         return v
     assert v
 
-prop_insertFile entry = nodups entry ==> monadicIO $ do
+-- @TODO remove noErrors property and check correctly
+prop_insertFile entry =
+    noErrors entry ==>
+    nodups entry ==> monadicIO $ do
     v <- run $ do
         db <- D.connect ":memory:"
         D.insertFile db entry
+        files <- runResourceT . C.sourceToList . D.allPaths $ db
         D.disconnect db
-        return True
+        return $ length files
         -- @TODO retrieve all and check data is identical
-    assert v
+    assert $ length entry == v
 
-prop_upsertFile entry = nodups entry ==> monadicIO $ do
-    v <- run $ do
+-- @TODO remove noErrors property and check correctly
+prop_upsertFile entry =
+    noErrors entry ==>
+    nodups entry ==> monadicIO $ do
+    (f1,f2) <- run $ do
         db <- D.connect ":memory:"
         D.upsertFile db entry
-        -- @TODO count how many entries are in the DB
+        files1 <- runResourceT . C.sourceToList . D.allPaths $ db
         -- check that data can be overwriten without error
         D.upsertFile db entry
-        -- @TODO count how many entries are in the DB and compare them
+        files2 <- runResourceT . C.sourceToList . D.allPaths $ db
         D.disconnect db
-        return True
+        return (length files1, length files2)
         -- @TODO retrieve all and check data is identical
-    assert v
+    assert $ f1 == f2 && f1 == (length entry)
 
 nodups :: [Entry] -> Bool
 nodups = nodups' Set.empty Set.empty
@@ -71,6 +81,9 @@ nodups = nodups' Set.empty Set.empty
     nodups' a p (b : c) = not (Set.member b a)
                      && not (Set.member (entryPath b) p)
                      && nodups' (Set.insert b a) (Set.insert (entryPath b) p) c
+
+noErrors :: [Entry] -> Bool
+noErrors = all (not . isError)
 
 return []
 runTests = $quickCheckAll
