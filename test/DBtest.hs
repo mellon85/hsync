@@ -15,7 +15,6 @@ import qualified Data.Set as Set
 import qualified Data.Conduit as C
 import Control.Monad.Trans.Resource (runResourceT)
 
-
 -- testing
 import Test.QuickCheck
 import Test.QuickCheck.Monadic
@@ -45,22 +44,18 @@ prop_isFileNewer_empty path time = monadicIO $ do
         return v
     assert v
 
--- @TODO remove noErrors property and check correctly
 prop_insertFile entry =
-    noErrors entry ==>
     nodups entry ==> monadicIO $ do
     v <- run $ do
         db <- D.connect ":memory:"
         D.insertFile db entry
         files <- runResourceT . C.sourceToList . D.allPaths $ db
         D.disconnect db
-        return $ length files
+        return $ files
         -- @TODO retrieve all and check data is identical
-    assert $ length entry == v
+    assert $ (length $ filter (not . isError) entry) == length v
 
--- @TODO remove noErrors property and check correctly
 prop_upsertFile entry =
-    noErrors entry ==>
     nodups entry ==> monadicIO $ do
     (f1,f2) <- run $ do
         db <- D.connect ":memory:"
@@ -70,9 +65,10 @@ prop_upsertFile entry =
         D.upsertFile db entry
         files2 <- runResourceT . C.sourceToList . D.allPaths $ db
         D.disconnect db
-        return (length files1, length files2)
+        return (files1, files2)
         -- @TODO retrieve all and check data is identical
-    assert $ f1 == f2 && f1 == (length entry)
+    assert $ (length f1) == (length f2)
+    assert $ (length f1) == (length $ filter (not . isError) entry)
 
 nodups :: [Entry] -> Bool
 nodups = nodups' Set.empty Set.empty
