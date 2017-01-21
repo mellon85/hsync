@@ -170,27 +170,16 @@ isFileNewer db path time =
         [HS.SqlString path, HS.SqlUTCTime time] (\r -> do
             return . isJust $ r)
 
--- | Apply the Entry to any function passed to it to return a value
-applyAll :: [Entry -> HS.SqlValue] -> Entry -> [HS.SqlValue]
-applyAll xs e = map (\f -> f e) xs
 
 -- |Inserts or updates an Entry object in the database
 -- If it's an Error it's skipped, everything else is inserted in the database
 upsertFile :: (MonadIO m) =>
        DBConnection -- ^ database connection
-    -> Entry        -- ^ Entry to store in the database
+    -> [Entry]      -- ^ Entry to store in the database
     -> m ()
-upsertFile db entry@Error{} = return ()
-upsertFile db entry = do
-    withStatement db
+upsertFile db entries = withStatementMany db
         "INSERT OR REPLACE INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"
-        (applyAll [HS.SqlString . entryPath,
-                   HS.SqlUTCTime . modificationTime,
-                   HS.SqlBool . isDirectory,
-                   getSymlinkOrNull,
-                   getFileBlobField blocks,
-                   getFileBlobField ((\x->[x]) . checksum)] entry)
-        (return . pure ())
+    . map entryToSql . filter (not . isError) $ entries
 
 -- |Insert a Entry object in the database
 -- If it's an Error it's skipped, everything else is inserted in the database
@@ -200,7 +189,7 @@ insertFile :: (MonadIO m) =>
     -> m ()
 insertFile db entries = withStatementMany db
     "INSERT INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"
-    . map entryToSql . filter isError $ entries
+    . map entryToSql . filter (not . isError) $ entries
 
 getSymlinkOrNull :: Entry -> HS.SqlValue
 getSymlinkOrNull e@Symlink{} = HS.SqlString . target $ e
@@ -238,3 +227,7 @@ entryToSql = applyAll [
     getSymlinkOrNull,
     getFileBlobField blocks,
     getFileBlobField ((\x->[x]) . checksum)]
+    where
+        -- | Apply the Entry to any function passed to it to return a value
+        applyAll :: [Entry -> HS.SqlValue] -> Entry -> [HS.SqlValue]
+        applyAll xs e = map (\f -> f e) xs
