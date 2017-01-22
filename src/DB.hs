@@ -20,7 +20,6 @@ import qualified Database.HDBC.Sqlite3 as HSD
 import Data.List
 import Control.Monad
 import Control.Monad.Reader
-import Control.Exception
 import Control.Monad.Trans.Resource
 import Data.Maybe (isJust)
 import Data.Time.Clock
@@ -30,6 +29,8 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteArray as BA
 import Crypto.Hash (digestFromByteString)
+
+import Control.Monad.Catch
 
 import Logger
 import FileEntry
@@ -106,7 +107,7 @@ getVersion c = do
 
 -- |Given a database, query index, and parameters it will perform the query
 -- and apply the function to all the returned rows
-withStatementAll :: (MonadIO m) =>
+withStatementAll :: (MonadIO m, MonadMask m) =>
        DBConnection              -- ^ Database connection
     -> String                    -- ^ Statement
     -> [HS.SqlValue]             -- ^ Values to pass as input
@@ -114,12 +115,20 @@ withStatementAll :: (MonadIO m) =>
                                  --   to this function
     -> m b                       -- ^ Returns the value in the source monad
 withStatementAll c sql params f = do
-    stmt <- liftIO $ HS.prepare (dbhandle c) sql
-    liftIO $ HS.execute stmt params
-    rows <- liftIO $ HS.fetchAllRows stmt
-    r <- f rows
-    liftIO $ HS.commit (dbhandle c)
-    return r
+    bracket init last core
+    where
+        init = do
+            stmt <- liftIO $ HS.prepare (dbhandle c) sql
+            liftIO $ HS.execute stmt params
+            return $ (dbhandle c, stmt)
+
+        last (c, _) = liftIO $ HS.rollback c
+
+        core (c, stmt) = do
+            rows <- liftIO $ HS.fetchAllRows stmt
+            r <- f rows
+            liftIO $ HS.commit c
+            return r
 
 -- | Given a database, query index, and parameters it will perform the query
 -- and apply the function to the first row only
@@ -179,15 +188,19 @@ insertFile db entries = withStatementMany db
     "INSERT INTO file (path, modificationTime, directory, symlink, bhash, hash) VALUES (?, ?, ?, ?, ?, ?)"
     . map entryToSql . filter (not . isError) $ entries
 
-allPaths :: (Monad m, MonadIO m) =>
+allPaths :: (MonadIO m, MonadResource m) =>
         DBConnection
      -> Source m (String)
-allPaths db = do
-    stmt <- liftIO $ HS.prepare (dbhandle db)
-                "SELECT path FROM file ORDER BY path"
-    liftIO $ HS.execute stmt []
-    loop stmt
+allPaths db = bracketP init clean loop
     where
+        init = do
+            stmt <- HS.prepare (dbhandle db)
+                "SELECT path FROM file ORDER BY path"
+            HS.execute stmt []
+            return stmt
+
+        clean _ = HS.rollback $ dbhandle db
+
         loop stmt = do
             row <- liftIO $ HS.fetchRow stmt
             case row of
