@@ -186,7 +186,7 @@ insertFile db entries = withStatementMany db
 
 allPaths :: (Monad m, MonadIO m) =>
         DBConnection
-     -> Source m (BS.ByteString)
+     -> Source m (String)
 allPaths db = do
     stmt <- liftIO $ HS.prepare (dbhandle db)
                 "SELECT path FROM file ORDER BY path"
@@ -197,7 +197,7 @@ allPaths db = do
             row <- liftIO $ HS.fetchRow stmt
             case row of
                 Nothing     -> return ()
-                Just [path] -> do yield (HS.fromSql path :: BS.ByteString)
+                Just [path] -> do yield $ (HS.fromSql path :: String)
                                   loop stmt
 
 getSymlinkOrNull :: Entry -> HS.SqlValue
