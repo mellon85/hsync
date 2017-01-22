@@ -121,24 +121,18 @@ withStatementAll c sql params f = do
     liftIO $ HS.commit (dbhandle c)
     return r
 
--- |Given a database, query index, and parameters it will perform the query
+-- | Given a database, query index, and parameters it will perform the query
 -- and apply the function to the first row only
 withStatement :: (MonadIO m) =>
        DBConnection              -- ^ Database connection
     -> String                    -- ^ Statement
     -> [HS.SqlValue]             -- ^ Values to pass as input
-    -> ((Maybe [HS.SqlValue]) -> m b) -- The single result
+    -> (([[HS.SqlValue]]) -> IO b) -- The single result
     -> m b                       -- ^ Returns the value in the source monad
 withStatement c sql params f = do
-    stmt <- liftIO $ HS.prepare (dbhandle c) sql
-    liftIO $ HS.execute stmt params
-    row <- liftIO $ HS.fetchRow stmt
-    r <- f row
-    r' <- liftIO $ HS.fetchRow stmt
-    assert (r' == Nothing) (liftIO $ HS.finish stmt)
-    liftIO $ HS.commit (dbhandle c)
-    -- just in case there is more than one row
-    return r
+    liftIO $ HS.withTransaction (dbhandle c) $ \db -> do
+        row <- HS.quickQuery' (dbhandle c) sql params
+        f row
 
 withStatementMany :: (MonadIO m) =>
        DBConnection              -- ^ Database connection
@@ -146,9 +140,11 @@ withStatementMany :: (MonadIO m) =>
     -> [[HS.SqlValue]]           -- ^ Values to pass as input
     -> m ()                      -- ^ Returns the value in the source monad
 withStatementMany db sql params = do
-    stmt <- liftIO $ HS.prepare (dbhandle db) sql
-    liftIO $ HS.executeMany stmt params
-    liftIO $ HS.commit (dbhandle db)
+    liftIO $ bracketOnError (HS.prepare (dbhandle db) sql)
+        (\_ -> HS.rollback (dbhandle db))
+        (\stmt -> do
+            HS.executeMany stmt params
+            HS.commit (dbhandle db))
 
 -- | Returns true if the path is newer that the informations stored in the
 -- database.
@@ -160,8 +156,7 @@ isFileNewer :: (MonadIO m)
 isFileNewer db path time =
     withStatement db
         "SELECT modificationTime FROM file WHERE path=? AND modificationTime<=?"
-        [HS.SqlString path, HS.SqlUTCTime time] (\r -> do
-            return . isJust $ r)
+        [HS.SqlString path, HS.SqlUTCTime time] (return . (>0) . length)
 
 
 -- |Inserts or updates an Entry object in the database
