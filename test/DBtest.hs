@@ -44,6 +44,7 @@ prop_isFileNewer_empty path time = monadicIO $ do
         return v
     assert v
 
+-- @TODO should check that hashes and symlink and whatnot data is correct
 prop_insertFile entry =
     nodups entry ==> monadicIO $ do
     v <- run $ do
@@ -52,24 +53,35 @@ prop_insertFile entry =
         files <- runResourceT . C.sourceToList . D.allPaths $ db
         D.disconnect db
         return $ files
-        -- @TODO retrieve all and check data is identical
     assert $ (length $ filter (not . isError) entry) == length v
+    assert $ entriesDBcheck entry v
 
+-- @TODO should check that hashes and symlink and whatnot data is correct
 prop_upsertFile entry =
     nodups entry ==> monadicIO $ do
     (f1,f2) <- run $ do
         db <- D.connect ":memory:"
         D.upsertFile db entry
         files1 <- runResourceT . C.sourceToList . D.allPaths $ db
-        -- check that data can be overwriten without error
         D.upsertFile db entry
         files2 <- runResourceT . C.sourceToList . D.allPaths $ db
         D.disconnect db
         return (files1, files2)
-        -- @TODO retrieve all and check data is identical
-    assert $ (length f1) == (length f2)
+    assert $ f1 == f2
+    assert $ entriesDBcheck entry f1
     assert $ (length f1) == (length $ filter (not . isError) entry)
 
+
+entry2set :: [Entry] -> Set.Set String
+entry2set = Set.fromList . map entryPath
+
+entriesDBcheck entries files = diff == 0
+    where
+        diff = Set.size (Set.difference files' entries')
+        files' = Set.fromList files
+        entries' = entry2set entries
+
+-- | Property to verify that there are no duplicated entries
 nodups :: [Entry] -> Bool
 nodups = nodups' Set.empty Set.empty
     where
@@ -78,6 +90,7 @@ nodups = nodups' Set.empty Set.empty
                      && not (Set.member (entryPath b) p)
                      && nodups' (Set.insert b a) (Set.insert (entryPath b) p) c
 
+-- | Property to verify that there are no errors in the generated Entries
 noErrors :: [Entry] -> Bool
 noErrors = all (not . isError)
 
