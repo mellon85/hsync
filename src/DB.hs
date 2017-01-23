@@ -30,7 +30,6 @@ import qualified Data.ByteArray as BA
 import Crypto.Hash (digestFromByteString)
 import Database.HDBC (fromSql)
 import Control.Monad.Catch
-import Data.ByteString.Char8 (pack, unpack)
 
 import Logger
 import FileEntry
