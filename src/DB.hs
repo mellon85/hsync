@@ -262,19 +262,22 @@ getEntry db fpath = do
         sqlToEntry [timestamp, dir, sym, bhash, hash] = let
             time = fromSql timestamp
             directory = fromSql dir :: Bool
-            symlink = fromSql sym
+            symlink = fromSql sym :: String
             bhash' = deserializeHashes  $ fromSql bhash -- might be null
             hash' = head . deserializeHashes  $ fromSql bhash -- might be null
-            in Just $! case (directory, symlink, hash) of
-                (_,HS.SqlByteString _,_) -> Symlink { entryPath = fpath,
-                                        modificationTime = time,
-                                        target = fromSql sym}
-                (True,_,_) -> Directory { entryPath = fpath,
+            in Just $! case (directory, sym, hash) of
+                (True,HS.SqlNull,_) -> Directory {
+                                          entryPath = fpath,
                                           modificationTime = time }
-                (_,_,HS.SqlNull) -> File { entryPath = fpath,
-                                           modificationTime = time }
-                (_,_,_) -> ChecksumFile { entryPath = fpath,
+                (False,HS.SqlNull,HS.SqlNull) -> File {
+                                          entryPath = fpath,
+                                          modificationTime = time }
+                (False,HS.SqlNull,_) -> ChecksumFile {
+                                          entryPath = fpath,
                                           modificationTime = time,
                                           blocks = bhash',
                                           checksum = hash' }
+                (_,_,_) -> Symlink {      entryPath = fpath,
+                                          modificationTime = time,
+                                          target = fromSql sym}
 
