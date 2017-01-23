@@ -1,5 +1,3 @@
-{-# LANGUAGE TemplateHaskell #-}
-
 module DB
     (DBConnection,
      connect,
@@ -11,6 +9,7 @@ module DB
      upsertFile,
      insertFile,
      allPaths,
+     getEntry,
      transaction,
      version)
     where
@@ -29,8 +28,9 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.ByteArray as BA
 import Crypto.Hash (digestFromByteString)
-
+import Database.HDBC (fromSql)
 import Control.Monad.Catch
+import Data.ByteString.Char8 (pack, unpack)
 
 import Logger
 import FileEntry
@@ -148,12 +148,10 @@ withStatementMany :: (MonadIO m) =>
     -> String                    -- ^ Statement
     -> [[HS.SqlValue]]           -- ^ Values to pass as input
     -> m ()                      -- ^ Returns the value in the source monad
-withStatementMany db sql params = do
-    liftIO $ bracketOnError (HS.prepare (dbhandle db) sql)
-        (\_ -> HS.rollback (dbhandle db))
-        (\stmt -> do
-            HS.executeMany stmt params
-            HS.commit (dbhandle db))
+withStatementMany c sql params =
+    liftIO $ HS.withTransaction (dbhandle c) $ \db -> do
+        stmt <- HS.prepare db sql
+        HS.executeMany stmt params
 
 -- | Returns true if the path is newer that the informations stored in the
 -- database.
@@ -193,13 +191,12 @@ allPaths :: (MonadIO m, MonadResource m) =>
      -> Source m (String)
 allPaths db = bracketP init clean loop
     where
-        init = do
-            stmt <- HS.prepare (dbhandle db)
-                "SELECT path FROM file ORDER BY path"
-            HS.execute stmt []
-            return stmt
+        init = do stmt <- HS.prepare (dbhandle db)
+                      "SELECT path FROM file ORDER BY path"
+                  HS.execute stmt []
+                  return stmt
 
-        clean _ = HS.rollback $ dbhandle db
+        clean = HS.finish
 
         loop stmt = do
             row <- liftIO $ HS.fetchRow stmt
@@ -249,4 +246,36 @@ entryToSql = applyAll [
         -- | Apply the Entry to any function passed to it to return a value
         applyAll :: [Entry -> HS.SqlValue] -> Entry -> [HS.SqlValue]
         applyAll xs e = map (\f -> f e) xs
+
+getEntry :: (MonadIO m) =>
+        DBConnection    -- | Database connection
+     -> String          -- | File path to search
+     -> m (Maybe Entry) -- | The Entry
+getEntry db fpath = do
+    row <- liftIO $ HS.withTransaction (dbhandle db) $ \db -> do
+        HS.quickQuery' db sql [HS.toSql fpath]
+    return . sqlToEntry $ head row
+    where
+        sql = "SELECT modificationTime, directory, symlink, bhash, hash FROM file WHERE path=?"
+
+        sqlToEntry :: [HS.SqlValue] -> Maybe Entry
+        sqlToEntry [] = Nothing
+        sqlToEntry [timestamp, dir, sym, bhash, hash] = let
+            time = fromSql timestamp
+            directory = fromSql dir :: Bool
+            symlink = fromSql sym
+            bhash' = deserializeHashes  $ fromSql bhash -- might be null
+            hash' = head . deserializeHashes  $ fromSql bhash -- might be null
+            in Just $! case (directory, symlink, hash) of
+                (_,HS.SqlByteString _,_) -> Symlink { entryPath = fpath,
+                                        modificationTime = time,
+                                        target = fromSql sym}
+                (True,_,_) -> Directory { entryPath = fpath,
+                                          modificationTime = time }
+                (_,_,HS.SqlNull) -> File { entryPath = fpath,
+                                           modificationTime = time }
+                (_,_,_) -> ChecksumFile { entryPath = fpath,
+                                          modificationTime = time,
+                                          blocks = bhash',
+                                          checksum = hash' }
 

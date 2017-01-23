@@ -6,7 +6,8 @@ import qualified DB as D
 import MyArbitrary
 
 import qualified Database.HDBC as HS
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, fromJust)
+import Data.List (sortBy)
 
 import qualified Data.ByteString as BS
 import FileEntry
@@ -44,33 +45,47 @@ prop_isFileNewer_empty path time = monadicIO $ do
         return v
     assert v
 
--- @TODO should check that hashes and symlink and whatnot data is correct
 prop_insertFile entry =
     nodups entry ==> monadicIO $ do
-    v <- run $ do
+    (files,entries) <- run $ do
         db <- D.connect ":memory:"
         D.insertFile db entry
         files <- runResourceT . C.sourceToList . D.allPaths $ db
+        entrydb <- mapM (D.getEntry db) files
         D.disconnect db
-        return $ files
-    assert $ (length $ filter (not . isError) entry) == length v
-    assert $ entriesDBcheck entry v
+        return $ (files, map fromJust entrydb)
+    assert $ (length $ filter (not . isError) entries) == length files
+    assert $ entriesDBcheck entry files
+    assert $ entries == (sortPath $ filter (not . isError) entry)
 
--- @TODO should check that hashes and symlink and whatnot data is correct
+sortPath = sortBy comparison
+    where
+        comparison a b = compare (entryPath a) (entryPath b)
+
 prop_upsertFile entry =
     nodups entry ==> monadicIO $ do
-    (f1,f2) <- run $ do
+    (f1, f2, e1, e2) <- run $ do
         db <- D.connect ":memory:"
         D.upsertFile db entry
         files1 <- runResourceT . C.sourceToList . D.allPaths $ db
+        entry1 <- mapM (D.getEntry db) files1
         D.upsertFile db entry
         files2 <- runResourceT . C.sourceToList . D.allPaths $ db
+        entry2 <- mapM (D.getEntry db) files2
         D.disconnect db
-        return (files1, files2)
+        return (files1, files2, map fromJust entry1, map fromJust entry2)
     assert $ f1 == f2
     assert $ entriesDBcheck entry f1
     assert $ (length f1) == (length $ filter (not . isError) entry)
+    assert $ e1 == (sortPath $ filter (not . isError) entry)
+    assert $ e1 == e2
 
+prop_getEntry entry = (not . isError) entry ==> monadicIO $ do
+    (Just v) <- run $ do
+        db <- D.connect ":memory:"
+        D.insertFile db [entry]
+        D.getEntry db $ entryPath entry
+    assert $ v == entry
 
 entry2set :: [Entry] -> Set.Set String
 entry2set = Set.fromList . map entryPath
