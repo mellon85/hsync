@@ -6,7 +6,7 @@ module Logger
     ,warningM
     ,debugM
     ,errorM
-    ,Priority(DEBUG, INFO, ERROR)
+    ,Priority(DEBUG, INFO, WARNING, ERROR)
     ) where
 
 import System.Log.Logger

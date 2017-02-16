@@ -1,8 +1,11 @@
 module Main where
 
-import qualified DHT as D
+import qualified Discover.DHT as D
+import qualified Discover.Broadcast as B
 import Control.Concurrent
 import Control.Monad
+
+import Configuration as C
 
 import Logger
 import FSWatcher
@@ -18,18 +21,27 @@ test dht = do
     threadDelay sleepTime
     D.nodes >>= debugM logModule . show
 
+info = infoM logModule
+
 main :: IO ()
 main = do
-    setupLogger DEBUG
+    --conf <- return $ C.readDefaultConfiguration
+    conf <- return $ C.defaultConfig
+
+    -- setup logger level
+    setupLogger $ C.loggerLevel conf
 
     id <- D.generateID
-    infoM logModule "starting DHT"
-    dht <- D.startDHT (Just 0) Nothing 4445 id
-    infoM logModule "started DHT"
+    info "starting DHT"
+    dht <- D.start (Just 0) Nothing 4445 id
+    info "started DHT"
     n <- D.bootstrap "nodes.dump"
 
-    infoM logModule $ "found "++show n++" nodes"
-    infoM logModule "bootstrap nodes sent"
+    info $ "found "++show n++" nodes"
+    info "bootstrap nodes sent"
+
+    -- start broadcast
+    b <- startBroadcast conf
 
     forkIO testFS
 
@@ -37,10 +49,18 @@ main = do
     test dht
     test dht
 
-    threadDelay sleepTime
+    threadDelay 200000000
+    maybe (return ()) (B.stop) b
+
     D.saveBootstrap "nodes.dump"
-    D.stopDHT dht
+    D.stop dht
 
     closeLogger
     infoM logModule $ "Closing"
+
+startBroadcast :: C.Configuration -> IO (Maybe B.Broadcast)
+startBroadcast conf | broadcastEnabled conf = do
+                        b <- B.start (fromInteger . toInteger $ broadcastPort conf) (fromInteger . toInteger $ broadcastRefresh conf)
+                        return . Just $ b
+                    | otherwise = return Nothing
 
