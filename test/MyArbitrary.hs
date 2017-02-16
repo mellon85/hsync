@@ -11,7 +11,6 @@ import Data.Time.Calendar
 import Crypto.Hash
 import qualified FSWatcher as FS
 import Control.Exception.Base
-import FileEntry
 
 instance Arbitrary Day where
     arbitrary = do
@@ -29,7 +28,7 @@ instance Arbitrary UTCTime where
         difftime <- arbitrary
         return $ UTCTime day difftime
 
-instance Arbitrary Entry where
+instance Arbitrary FS.Entry where
     arbitrary = do
         which <- choose (0,4) :: Gen Int
         t <- arbitrary
@@ -38,8 +37,8 @@ instance Arbitrary Entry where
         ss <- arbitrary
         hs <- return $ BS.pack ss
         return $ case which of
-            0 -> File p t
-            1 -> ChecksumFile p t (hash hs) [hash hs]
-            2 -> Directory p t
-            3 -> Symlink p t s
-            4 -> Error p p
+            0 -> FS.File p t
+            1 -> FS.ChecksumFile p t (hash hs) [hash hs]
+            2 -> FS.Symlink p t s
+            3 -> FS.Directory p t
+            4 -> FS.Error p p
