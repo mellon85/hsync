@@ -10,7 +10,7 @@ import Configuration as C
 import Logger
 import FSWatcher
 
-logModule = rootLogger
+logModule = "APP"
 
 sleepTime = 20000000
 

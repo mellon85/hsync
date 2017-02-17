@@ -5,7 +5,8 @@ module Discover.Broadcast (
     ip6Running,
     Broadcast) where
 
-import Network.Socket hiding (send, sendTo, recv, recvFrom)
+import Prelude hiding (catch)
+import Network.Socket hiding (send, sendAllTo, recv, recvFrom)
 import Network.Socket.ByteString
 import Control.Monad.STM
 import Data.Time.Clock
@@ -15,9 +16,9 @@ import Control.Monad.IO.Class
 import Control.Monad
 import System.Timeout
 import Control.Concurrent.Async
+import Control.Monad.Catch
 import Control.Monad.Trans.State.Strict
 import qualified Data.ByteString as BS
-import Control.Exception
 import Logger
 
 logModule = "BRD"
@@ -39,15 +40,16 @@ data BroadcastConfiguration = BC {
         addressChan :: TChan SockAddr,  -- ^ Channel to communicate addresses found
         family :: Family,               -- ^ Socket Family
         addr :: String,                 -- ^ Address to look for
+        port :: PortNumber,             -- ^ Port number
         sock :: Socket                  -- ^ Socket
     }
 
 instance Show BroadcastConfiguration where
-    show (BC r _ f a _) = msg
+    show (BC r _ f a _ _) = msg
         where
             msg = title . shows r . space . shows f . space . shows a $ []
             title = ("BroadcastConfiguration "++)
-            space = (""++)
+            space = (" "++)
 
 debug = debugM logModule
 info = infoM logModule
@@ -66,26 +68,23 @@ start p n = do
     -- always report the situation anyway
     debug $ "Start IPv6 Broadcast"
     s6 <- bracketOnError
-        (socket AF_INET6 Datagram defaultProtocol)
-        (\s -> do
-            close s
-            error $ "Stop IPv6 Broadcast")
-        (broadcast . BC refreshTime peers AF_INET6 "ff02::1")
+            (socket AF_INET6 Datagram defaultProtocol)
+            (\s -> do
+                close s
+                info $ "Stop IPv6 Broadcast")
+            (broadcast . BC n peers AF_INET6 "ff02::1" p)
 
     debug $ "Start IPv4 Broadcast"
     s4 <- bracketOnError
-        (socket AF_INET Datagram defaultProtocol)
-        (\s -> do
-            close s
-            error $ "Stop IPv6 Broadcast")
-        (\s -> do
-            setSocketOption s Broadcast 1
-            broadcast $ BC refreshTime peers AF_INET "255.255.255.255" s)
+            (socket AF_INET Datagram defaultProtocol)
+            (\s -> do
+                close s
+                info $ "Stop IPv6 Broadcast")
+            (\s -> do
+                when (isSupportedSocketOption Broadcast) $ setSocketOption s Broadcast 1
+                broadcast $ BC n peers AF_INET "255.255.255.255" p s)
 
     return $ B s4 s6 peers
-
-    where
-        refreshTime = (n*1000000)
 
 -- | Stop the Broadcast discovery
 stop :: Broadcast -> IO ()
@@ -102,25 +101,32 @@ broadcast ::
         BroadcastConfiguration        -- ^ Configurations
      -> IO (Maybe (Socket, Async ())) -- ^ The socket and the async computation
                                       --   handling the loop
-broadcast bc@(BC r chan f addr s) = do
-    debug $ show bc
-    addr <- getAddrInfo (Just hint) (Just addr) Nothing
-    if length addr == 0
-    then do
-        warning $ ("Failed to start "++) . shows bc $ []
-        return Nothing
-    else let address = head addr in do
-            debug $ "Starting with address " ++ (show address)
-            bind s $ addrAddress address
-            a <- async $ broadcastLoop s r (addrAddress address) chan
-            return $ Just (s, a)
+broadcast bc@(BC r chan f addr p s) = broadcast' `catch` logError
     where
+        logError e = do
+            errorM logModule $ displayException (e :: SomeException)
+            return Nothing
+
+        broadcast' = do
+            debug $ show bc
+            addr <- getAddrInfo (Just hint) (Just addr) $ Just $ show p
+            liftIO $ debug $ show addr
+            if length addr == 0
+            then do
+                warning $ ("Failed to start "++) . shows bc $ []
+                return Nothing
+            else let address = head addr in do
+                debug $ "Starting with address " ++ (show address)
+                bind s $ addrAddress address
+                a <- async $ broadcastLoop s r (addrAddress address) chan
+                return $ Just (s, a)
+
         hint = defaultHints {
-                    addrFlags = [AI_NUMERICHOST],
+                    addrFlags = [AI_NUMERICHOST, AI_NUMERICSERV],
                     addrFamily = f,
                     addrSocketType = Datagram,
                     addrProtocol = 0 }
-    
+
 -- payload = hsync \0 <protocol version as 16 bit>
 payload = BS.pack [72, 83, 89, 78, 67, 00, 01]
 
@@ -129,29 +135,35 @@ broadcastLoop s r baddr peers = do
     runStateT (forever go) 0
     return ()
     where
-        go = do
+        go = go' `catch` (\e -> do
+            liftIO $ error $ displayException (e :: SomeException)
+            return ())
+
+        go' = do
             cumulative <- get
             (pkt, elapsed) <- liftIO $ recvBroadcast cumulative
             when ((elapsed + cumulative) >= r) $ liftIO sendBroadcast
             put $! max (elapsed + cumulative - r) 0
+            c <- get
             case pkt of
-                Just (s , addr) -> do
+                Just (s, addr) -> do
                     if BS.empty == s
                     then do
                         liftIO $ debug "Received stop for broadcast loop"
                         mzero -- interrupt loop
                     else do
-                        liftIO $ debug $ ("Found "++) . shows addr $ []
-                        liftIO $ atomically $ writeTChan peers addr
-                Nothing            -> do
+                        liftIO $ do debug $ ("Found "++) . shows addr $ []
+                                    atomically $ writeTChan peers addr
+                Nothing -> do
                     liftIO $ debug "Broadcast timeout"
 
         recvBroadcast t = do
             startTime <- getCurrentTime
-            rt <- timeout (r - t) $ recvFrom s 8192
+            rt <- timeout ((r - t)*1000000) $ recvFrom s 8192
             wakeTime <- getCurrentTime
-            return (rt, truncate $ diffUTCTime startTime wakeTime)
+            return (rt, truncate $ diffUTCTime wakeTime startTime)
         sendBroadcast = do
-            sendTo s payload baddr
+            liftIO $ debug "Send broadcast message"
+            sendAllTo s payload baddr
             return ()
 

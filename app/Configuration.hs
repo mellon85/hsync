@@ -6,7 +6,7 @@ module Configuration (
     readConfiguration,
     defaultConfig,
     ) where
-    
+
 import GHC.Generics
 import qualified Logger as L
 import qualified Data.Text as T
@@ -49,7 +49,7 @@ defaultConfig = Conf {
         dhtPort = 4545,
         broadcastEnabled = True,
         broadcastPort = 4546,
-        broadcastRefresh = 15,
+        broadcastRefresh = 60,
         loggerLevel = L.DEBUG
     }
 
