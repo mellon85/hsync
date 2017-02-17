@@ -23,7 +23,7 @@ library
   build-depends:       base >= 4.7 && < 5, cryptonite, memory, random, network,
        stm, mtl, time, text, directory >=1.2, array, bytestring, conduit,
        HDBC, HDBC-sqlite3, containers, iproute, hslogger, resourcet,
-       transformers, aeson, async
+       transformers, aeson, async, exceptions
   default-language:    Haskell2010
   
 executable dht-sync

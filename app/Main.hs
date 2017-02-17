@@ -10,7 +10,7 @@ import Configuration as C
 import Logger
 import FSWatcher
 
-logModule = rootLogger
+logModule = "APP"
 
 test dht = do
     id <- D.generateID
