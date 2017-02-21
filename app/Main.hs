@@ -9,6 +9,8 @@ import Configuration as C
 
 import Logger
 import FSWatcher
+import OS.Signals
+import Control.Concurrent.MVar
 
 logModule = "APP"
 
@@ -23,6 +25,12 @@ info = infoM logModule
 
 main :: IO ()
 main = do
+    -- rest of the application is covered by the signal handler
+    v <- newEmptyMVar
+    installSignalHandlers (do
+        info $ "Termination request received"
+        putMVar v ())
+
     --conf <- return $ C.readDefaultConfiguration
     conf <- return $ C.defaultConfig
 
@@ -42,18 +50,11 @@ main = do
     b <- startBroadcast conf
 
     forkIO testFS
+    takeMVar v
 
-    test dht
-    test dht
-    test dht
-
-
-    threadDelay 200000000
     maybe (return ()) (B.stop) b
-
     D.saveBootstrap "nodes.dump"
     D.stop dht
-
     closeLogger
 
 startBroadcast :: C.Configuration -> IO (Maybe B.Broadcast)

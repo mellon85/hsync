@@ -18,6 +18,8 @@ import System.Timeout
 import Control.Concurrent.Async
 import Control.Monad.Catch
 import Control.Monad.Trans.State.Strict
+import Control.Monad.Trans.Maybe
+import Control.Monad.Trans.Class
 import qualified Data.ByteString as BS
 import Logger
 
@@ -94,7 +96,6 @@ stop br = do
     where
         stop' (s,a) = do
             close s
-            cancel a
             wait a
 
 broadcast ::
@@ -132,25 +133,29 @@ payload = BS.pack [72, 83, 89, 78, 67, 00, 01]
 
 broadcastLoop :: Socket -> Int -> SockAddr -> TChan SockAddr -> IO ()
 broadcastLoop s r baddr peers = do
-    runStateT (forever go) 0
+    runMaybeT (runStateT (forever go) 0)
     return ()
     where
+        -- in case of stop we have to get out of the loop at the catch!
         go = go' `catch` (\e -> do
-            liftIO $ error $ displayException (e :: SomeException)
+            liftIO $ errorM logModule "exception received"
+            liftIO $ errorM logModule $ displayException (e :: SomeException)
             return ())
 
         go' = do
             cumulative <- get
+            bound <- liftIO $ isBound s
+            when (not bound) $ lift mzero
             (pkt, elapsed) <- liftIO $ recvBroadcast cumulative
             when ((elapsed + cumulative) >= r) $ liftIO sendBroadcast
-            put $! max (elapsed + cumulative - r) 0
+            put $ max (elapsed + cumulative - r) 0
             c <- get
             case pkt of
                 Just (s, addr) -> do
                     if BS.empty == s
                     then do
                         liftIO $ debug "Received stop for broadcast loop"
-                        mzero -- interrupt loop
+                        lift mzero -- interrupt loop
                     else do
                         liftIO $ do debug $ ("Found "++) . shows addr $ []
                                     atomically $ writeTChan peers addr
