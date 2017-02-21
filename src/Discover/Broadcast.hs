@@ -138,7 +138,6 @@ broadcastLoop s r baddr peers = do
     where
         -- in case of stop we have to get out of the loop at the catch!
         go = go' `catch` (\e -> do
-            liftIO $ errorM logModule "exception received"
             liftIO $ errorM logModule $ displayException (e :: SomeException)
             return ())
 
