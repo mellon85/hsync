@@ -15,7 +15,7 @@
 # resolver:
 #  name: custom-snapshot
 #  location: "./custom-snapshot.yaml"
-resolver: lts-7.12
+resolver: lts-9.0
 
 # User packages to be built.
 # Various formats can be used as shown in the example below.
@@ -42,7 +42,7 @@ packages:
 
 # process is a directory dependency
 # directory is needed due to the missing symlink function
-extra-deps: ['HDBC-sqlite3-2.3.3.1', 'directory-1.3.0.0', 'process-1.4.3.0']
+extra-deps: ['HDBC-sqlite3-2.3.3.1']
 
 # Override default flag values for local packages and extra-deps
 flags: {}
@@ -67,6 +67,3 @@ extra-package-dbs: []
 # 
 # Allow a newer minor version of GHC than the snapshot specifies
 # compiler-check: newer-minor
-
-docker:
-    enable: true

@@ -1,6 +1,5 @@
 module FileEntry (
         Entry(..),
-        FileDigest,
         isDirectory,
         isSymlink,
         addChecksum
@@ -8,9 +7,8 @@ module FileEntry (
 
 import Crypto.Hash
 import Data.Time.Clock
-
-
-type FileDigest = Digest MD5
+import Data.Sequence
+import HashUtils (ChunkedSum, AdlerHash)
 
 -- Type returned from a Conduit looking for all files an directories
 data Entry = File {
@@ -20,8 +18,8 @@ data Entry = File {
            | ChecksumFile {
         entryPath :: String,
         modificationTime :: UTCTime,
-        checksum :: FileDigest,
-        blocks :: [FileDigest]
+        checksum :: AdlerHash,
+        blocks :: Seq ChunkedSum
     }
            | Symlink {
         entryPath :: String,
@@ -50,7 +48,7 @@ isSymlink entry@Symlink{} = True
 isSymlink _ = False
 
 -- | Converts a File to a ChecksumFile adding hash data
-addChecksum :: Entry -> FileDigest -> [FileDigest] -> Entry
+addChecksum :: Entry -> AdlerHash -> Seq ChunkedSum -> Entry
 addChecksum (File a b) total blocks = ChecksumFile a b total blocks
 addChecksum _ _ _  = error "Add Checksum to wrong entry type"
 

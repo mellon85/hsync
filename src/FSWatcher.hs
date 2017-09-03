@@ -23,11 +23,15 @@ import System.IO
 import System.IO.Error
 import qualified Data.ByteString as BS
 import qualified Data.Conduit.List as CL
+import qualified Data.Conduit.Combinators as CC
 import qualified Database.HDBC as HS
 
 import qualified DB
 import Logger
 import FileEntry
+import HashUtils
+
+import Data.Sequence as S
 
 logModule = "FSW"
 
@@ -40,8 +44,6 @@ data IteratorConfiguration = IteratorConf {
         connection :: DB.DBConnection,
         followSymlink :: Bool -- currently always false
     }
-
-dbHashBlockSize = 128*1024 :: Int64
 
 -- | Iterate a path and given a Database connection will return all the modified
 -- entries.
@@ -105,30 +107,18 @@ hashEntry = awaitForever hashit
 
         foo :: Entry -> IO Entry
         foo x = withFile (entryPath x) ReadMode (hash x) `catch`
-            (return . Error (entryPath x) . io2s)
+                        (return . Error (entryPath x) . io2s)
+
         io2s :: IOException -> String
         io2s = displayException
 
         hash x handle = do
-            (h,b) <- hashblocks dbHashBlockSize handle
-            return $ addChecksum x h b
+            (total, hashes) <- hashblocks handle
+            return $ addChecksum x total hashes -- not correct
 
-{-
- - Given a block size, an input ByteString and a Digest type return a serie of
- - block's checksums
- -}
-hashblocks :: (HashAlgorithm d)
-    => Int64                      -- ^ Block size
-    -> Handle                     -- ^ Input file
-    -> IO (Digest d, [Digest d])  -- ^ Source definition
-hashblocks size h = (\(a,b) -> (hashFinalize a, b [])) <$> loop h (hashInit, id)
-    where
-        loop h (ctx, blocks) = do
-            eof <- hIsEOF h
-            if eof
-            then return (ctx, blocks)
-            else BS.hGet h (fromIntegral dbHashBlockSize) >>= \block ->
-                    return (hashUpdate ctx block, blocks . (hash block :))
+hashblocks :: Handle          -- ^ Input file
+           -> IO (AdlerHash, Seq ChunkedSum) -- ^ File and chunk hashes
+hashblocks handle = runConduit $ CC.sourceHandle handle =$ chunksumC $$ sinkSeq
 
 -- Finds element that are different between the two sources
 -- Usually one source is the local database, the other one is the current status
