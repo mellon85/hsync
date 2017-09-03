@@ -26,7 +26,9 @@ import Control.Concurrent.MVar
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Lazy as BSL
-import qualified Data.ByteArray as BA
+
+import Data.Foldable (toList)
+
 import HashUtils
 import Logger
 import FileEntry
@@ -123,7 +125,7 @@ sqlSelectAllKnownPaths c = HS.prepare c "SELECT path, hash FROM file SORT BY pat
 
 -- |Given a database, query index, and parameters it will perform the query
 -- and apply the function to all the returned rows
-withStatementAll :: (MonadIO m) => 
+withStatementAll :: (MonadIO m) =>
        DBConnection              -- ^ Database connection
     -> Int                       -- ^ Statement ID
     -> [HS.SqlValue]             -- ^ Values to pass as input
@@ -183,8 +185,8 @@ upsertFile db entry = do
                    HS.SqlUTCTime . modificationTime,
                    HS.SqlBool . isDirectory,
                    getSymlinkOrNull,
-                   getFileBlobField blocks,
-                   getFileBlobField checksum'] entry) (\_ -> return ())
+                   getBlocks,
+                   HS.toSql . checksum] entry) (const $ return ())
 
 -- |Insert a Entry object in the database
 -- If it's an Error it's skipped, everything else is inserted in the database 
@@ -199,21 +201,24 @@ insertFile db entry = do
                    HS.SqlUTCTime . modificationTime,
                    HS.SqlBool . isDirectory,
                    getSymlinkOrNull,
-                   getFileBlobField blocks,
-                   getFileBlobField checksum'] entry) (\_ -> return ())
-
-checksum' = (\x -> [x]) . checksum
+                   getBlocks,
+                   HS.toSql . checksum] entry) (const $ return ())
 
 getSymlinkOrNull :: Entry -> HS.SqlValue
 getSymlinkOrNull e@Symlink{} = HS.SqlString . target $ e
 getSymlinkOrNull _ = HS.SqlNull
 
-getFileBlobField :: (Foldable f) => (Entry -> f FileDigest) -> Entry -> HS.SqlValue
-getFileBlobField f e@ChecksumFile{} = HS.SqlByteString . convert . f $ e
+-- mallocArray
+-- pokeArray
+-- packCStringLen -> ByteString 
+
+getBlocks :: Entry -> HS.SqlValue
+getBlocks e@ChecksumFile{} = HS.SqlByteString . convert . blocks $ e
     where
-        convert xs | null xs   = BS.empty
-                   | otherwise = BSL.toStrict $ BSB.toLazyByteString $ foldMap (BSB.byteString . BA.convert) xs
-getFileBlobField _ _ = HS.SqlNull
+        convert = BSL.toStrict
+                   . BSB.toLazyByteString
+                   . mconcat . toList
+                   . fmap (\(CS a b) -> BSB.word32LE a `mappend` BSB.word32LE b)
 
 -- | Execute a safe SQL Transaction
 -- In case of error it will do a rollback, will execute a commit if there are no
