@@ -13,7 +13,6 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.Reader
 import Crypto.Hash
-import Data.Array
 import Data.Conduit
 import Data.Conduit.Lift
 import Data.Int

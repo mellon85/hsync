@@ -20,14 +20,16 @@ test dht = do
     D.nodes >>= debugM logModule . show
 
 info = infoM logModule
+debug = debugM logModule
 
 main :: IO ()
 main = do
     --conf <- return $ C.readDefaultConfiguration
-    conf <- return $ C.defaultConfig
+    conf <- readDefaultConfiguration
 
     -- setup logger level
-    setupLogger $ C.loggerLevel conf
+    setupLogger . loggingLevel . logging $ conf
+    debug $ show conf
 
     id <- D.generateID
     info "starting DHT"
@@ -39,7 +41,7 @@ main = do
     info "bootstrap nodes sent"
 
     -- start broadcast
-    b <- startBroadcast conf
+    b <- startBroadcast $ broadcast conf
 
     forkIO testFS
 
@@ -56,9 +58,9 @@ main = do
 
     closeLogger
 
-startBroadcast :: C.Configuration -> IO (Maybe B.Broadcast)
+startBroadcast :: C.BroadcastConf -> IO (Maybe B.Broadcast)
 startBroadcast conf | broadcastEnabled conf = do
-                        b <- B.start (fromInteger . toInteger $ broadcastPort conf) (fromInteger . toInteger $ broadcastRefresh conf)
+                        b <- B.start (fromIntegral $ broadcastPort conf) (fromIntegral $ broadcastInterval conf)
                         return . Just $ b
                     | otherwise = return Nothing
 
