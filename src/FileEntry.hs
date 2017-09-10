@@ -5,7 +5,6 @@ module FileEntry (
         addChecksum
     ) where
 
-import Crypto.Hash
 import Data.Time.Clock
 import Data.Sequence
 import HashUtils (ChunkedSum, AdlerHash)

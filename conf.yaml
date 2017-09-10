@@ -1,0 +1,7 @@
+# hsync default configuration
+logging:
+    level: "DEBUG"
+dht:
+    enable: true
+broadcast:
+    enable: true
