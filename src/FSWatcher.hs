@@ -5,7 +5,7 @@ module FSWatcher (
         Entry(..),
         filterErrors,
         findDiffs,
-        testFS,
+        hashConduit,
         module FileEntry
         ) where
 
@@ -33,6 +33,7 @@ import HashUtils
 import Data.Sequence as S
 
 logModule = "FSW"
+debug = debugM logModule
 
 data Comparison a = NewLeft a
                   | NewRight a
@@ -48,7 +49,7 @@ data IteratorConfiguration = IteratorConf {
 -- entries.
 iterateDirectory :: (Monad m, MonadIO m)
     => FilePath         -- ^ Directory path
-    -> DB.DBConnection     -- ^ Database connection
+    -> DB.DBConnection  -- ^ Database connection
     -> Source m Entry   -- ^ Conduit source
 iterateDirectory x c = do
     runReaderC (IteratorConf c False) (iterateDirectory' x)
@@ -60,6 +61,7 @@ iterateDirectory' :: (Monad m, MonadIO m, MonadReader IteratorConfiguration m)
 iterateDirectory' x = do
     send x True
     entries <- liftIO . tryIOError $ getDirectoryContents x
+    liftIO . debug $ "directory " ++ x ++ " entries: " ++ show entries
     case entries of
         Left e -> yield $ Error x $ displayException e
         Right l -> mapM_ recurse l
@@ -156,11 +158,4 @@ findDiffs s1 s2 = do
                 v2 <- lift $ rs2 $$++ await
                 recurse v1 v2
 
-testFS = do
-    c <- DB.connect "test.db"
-    b <- DB.verify c
-    unless b $ error "db corrupted"
-    -- should not use filterInfo, hashing can change an Info to an Error
-    iterateDirectory "." c =$ hashEntry $$ CL.mapM_ (debugM logModule . show)
-    DB.disconnect c
-
+hashConduit p c = iterateDirectory p c =$ hashEntry

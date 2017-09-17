@@ -7,8 +7,12 @@ import Control.Monad
 
 import Configuration as C
 
+import DB
 import Logger
 import FSWatcher
+
+import Data.Conduit
+import qualified Data.Conduit.List as CL
 
 logModule = "APP"
 
@@ -64,3 +68,12 @@ startBroadcast conf | broadcastEnabled conf = do
                         return . Just $ b
                     | otherwise = return Nothing
 
+
+
+testFS = do
+    c <- DB.connect "test.db"
+    b <- DB.verify c
+    unless b $ error "db corrupted"
+    -- should not use filterInfo, hashing can change an Info to an Error
+    hashConduit "." c $$ CL.mapM_ (debugM logModule . show)
+    DB.disconnect c
