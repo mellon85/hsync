@@ -103,7 +103,9 @@ filterErrors = awaitForever match
 hashEntry :: (Monad m, MonadIO m) => Conduit Entry m Entry
 hashEntry = awaitForever hashit
     where
-        hashit f@File{} = liftIO (foo f) >>= yield
+        hashit f@File{} = do
+            liftIO . debug $ "hash: " ++ entryPath f
+            liftIO (foo f) >>= yield
         hashit x = yield x
 
         foo :: Entry -> IO Entry
