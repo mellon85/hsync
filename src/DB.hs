@@ -20,7 +20,6 @@ import Control.Monad
 import Control.Monad.Reader
 import Control.Exception
 import Data.Maybe (isJust)
-import Data.Array
 import Data.Time.Clock
 import Control.Concurrent.MVar
 import qualified Data.ByteString as BS
