@@ -1,51 +1,39 @@
-{-# LANGUAGE BangPatterns, TypeFamilies, FlexibleContexts #-}
+{-# LANGUAGE BangPatterns #-}
 module HashUtils (
         chunksumC, AdlerHash, ChunkedSum(..), sinkSeq, max_size, min_size
-    )
-    where
+    ) where
 
--- base
+import Data.Conduit
+import Data.Void
+import Data.Monoid (mempty)
+import Control.Monad.IO.Class
+import qualified Data.ByteString.Lazy as BL
+import Data.Word
 import Foreign.Storable
 import Foreign.Ptr
-import Control.Monad
-import Data.Word
-import Data.Bits
-import Control.Monad.IO.Class
 import Data.Sequence
+import Data.Maybe
+import Data.Bits
 
--- vector
-import qualified Data.Vector.Unboxed as VU
-import qualified Data.Vector.Unboxed.Mutable as VUM
-
-import qualified Data.ByteString as BS
-
--- conduit
-import Data.Conduit
-import qualified Data.Conduit.Binary as CB
-import qualified Data.Conduit.Combinators as CC
-
-
-
-min_size :: Word32
-min_size = 512*1024-1
-
-max_size :: Word32
-max_size = 8192*1024
-
-window_size :: Word32
-window_size = 8*1024
+import System.IO
 
 bit_mask :: Word32
-bit_mask = 0x7FFFF -- 14 bits
+bit_mask = 0x7FFF
 
-bit_mask32 :: Word32
-bit_mask32 = 0x7FFFF -- 14 bits
+window_size :: Word32
+window_size = 8192
 
-adler_mod :: Word32
-adler_mod = 65521
+min_size :: Word32
+min_size = 512*1024
+
+max_size :: Word32
+max_size = 1024*1024*2
 
 type Adler32 = (Word32, Word32)
 type AdlerHash = Word32
+
+adler_mod :: Word32
+adler_mod = 65521
 
 adlerInit :: Adler32
 adlerInit = (1, 0)
@@ -68,7 +56,6 @@ adlerShift (!a, !b) !byteIn !byteOut =
         b' = (a' + b - bOut * (fromIntegral $ window_size-1)) `mod` adler_mod
         in (a', b')
 
-
 data ChunkedSum = CS {
         hash :: Word32,
         chunkSize :: Word32
@@ -85,80 +72,55 @@ instance Storable ChunkedSum where
         poke (castPtr ptr) hash
         pokeElemOff (castPtr ptr) (sizeOf hash) len
 
-data ChunkedSumState = CSS Adler32
-                           (Maybe (VU.Vector Word8))
-                           BS.ByteString
-                           Word32
-                           Adler32 -- ^ Total file hash
+
+type ProduceChunkedSum m = ConduitM () ChunkedSum m ()
+
+chunksumC :: (MonadIO m) => Handle -> ProduceChunkedSum m
+chunksumC handle = do
+    lazy_data <- liftIO $ BL.hGetContents handle
+    tailSum lazy_data adlerInit adlerInit 0 lazy_data
+  where
+    tailSum :: (Monad m) => BL.ByteString
+                         -> Adler32 -> Adler32
+                         -> Word32 -> BL.ByteString
+                         -> ProduceChunkedSum m
+    tailSum bs !current !total !count !out =
+        case BL.uncons bs of
+            Nothing          -> do
+                yield $! CS (adlerHash current) count
+                yield $! CS (adlerHash total) 0
+            Just (byte, bs') ->
+                if chunkPoint current count
+                then do yield $! CS (adlerHash current) count
+                        tailSum bs' adlerInit adlerInit 0 bs'
+                else consumeByte current total count out byte (tailSum bs')
+
+    consumeByte !curr !total !cnt !buf !byte cont
+        | cnt < window_size = do
+          cont (adlerAdd curr byte)
+               (adlerAdd total byte)
+               (cnt + 1)
+               buf
+        | otherwise =
+          let (rest', bs') = (BL.head buf, BL.tail buf) in
+          cont (adlerShift curr byte rest')
+               (adlerAdd total byte)
+               (cnt + 1)
+               bs'
+
+    chunkPoint :: Adler32 -> Word32 -> Bool
+    chunkPoint current count
+        | (adlerHash current) .&. bit_mask == 0 && count >= min_size = True
+        | count > max_size = True
+        | otherwise = False
 
 -- reads all checksums and returns a tuple with the total checksum in the first
 -- place and the sequence of checksums as the second
-sinkSeq :: Monad m => Consumer ChunkedSum m (AdlerHash, Seq ChunkedSum)
-sinkSeq = do
-    Just v' <- await
-    loop mempty v'
+sinkSeq :: Monad m => ConduitM ChunkedSum Void m (AdlerHash, Seq ChunkedSum)
+sinkSeq = loop mempty
     where
-        loop !s !t = do
-            v <- await
-            case v of
-                Nothing -> return $ (hash t, s)
-                Just v  -> s `seq` loop (s |> t) v
-
-
--- the last entry returned is the total file hash
-chunksumC :: MonadIO m => Conduit BS.ByteString m ChunkedSum
-chunksumC = chunksum (initialState adlerInit)
-
-initialState :: Adler32 -> ChunkedSumState
-initialState total = CSS adlerInit
-                        (Just $ VU.replicate (fromIntegral window_size) 0)
-                        BS.empty 0 total
-
-chunksum :: MonadIO m => ChunkedSumState -> Conduit BS.ByteString m ChunkedSum
-chunksum css_in@(CSS h _ _ cnt total) = do
-    chunk_in <- await
-    case chunk_in of
-        Nothing    -> do
-            yield (CS (adlerHash h) cnt)
-            yield (CS (adlerHash total) 0)
-        Just chunk -> do
-            state@(CSS hash window rest count tot) <- liftIO $ step css_in chunk
-            case window of
-                Just _  -> chunksum state
-                Nothing -> do
-                    yield (CS (adlerHash hash) count)
-                    when (BS.null rest) $ leftover rest
-                    chunksum (initialState tot)
-
-    where
-        step :: ChunkedSumState -> BS.ByteString -> IO ChunkedSumState
-        step (CSS h (Just w) _ cnt tot) chunk = do
-            -- prepare
-            vec <- VU.unsafeThaw w
-
-            -- inner loop
-            (h', cnt', tot', rest, chunked) <- inner_loop vec h tot cnt chunk
-
-            -- close
-            vec' <- VU.unsafeFreeze vec
-            if chunked
-            then return (CSS h' Nothing rest cnt' tot')
-            else return (CSS h' (Just vec') rest cnt' tot')
-
-        inner_loop v h tot cnt chunk
-            | BS.null chunk || chunkable = return (h, cnt, tot, chunk, chunkable)
-            | otherwise     = do
-                let !idx   = fromIntegral $! cnt `mod` window_size
-                    !byte  = BS.head chunk
-                    chunk' = BS.tail chunk
-                prev <- VUM.unsafeRead v idx
-                VUM.unsafeWrite v idx byte
-                let h'   = adlerShift h byte prev
-                    tot' = adlerAdd tot byte
-                    cnt' = cnt + 1
-                -- all other values are forced due to chunkable and BS.null
-                tot' `seq` inner_loop v h' tot' cnt' chunk'
-            where
-                {-# INLINE chunkable #-}
-                chunkable = (adlerHash h .&. bit_mask32 == 0 && cnt > min_size)
-                                || cnt >= max_size
+        loop !s = do
+            Just v <- await
+            if chunkSize v == 0
+            then return $ (hash v, s)
+            else loop (s |> v)

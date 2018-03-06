@@ -22,7 +22,6 @@ import System.IO
 import System.IO.Error
 import qualified Data.ByteString as BS
 import qualified Data.Conduit.List as CL
-import qualified Data.Conduit.Combinators as CC
 import qualified Database.HDBC as HS
 
 import qualified DB
@@ -115,9 +114,9 @@ hashEntry = awaitForever hashit
             (total, hashes) <- hashblocks handle
             return $ addChecksum x total hashes -- not correct
 
-hashblocks :: Handle          -- ^ Input file
+hashblocks :: Handle                         -- ^ Input file
            -> IO (AdlerHash, Seq ChunkedSum) -- ^ File and chunk hashes
-hashblocks handle = runConduit $ CC.sourceHandle handle =$ chunksumC $$ sinkSeq
+hashblocks handle = runConduit $ chunksumC handle .| sinkSeq
 
 -- Finds element that are different between the two sources
 -- Usually one source is the local database, the other one is the current status

@@ -16,7 +16,7 @@ cabal-version:       >=1.10
 library
   hs-source-dirs:      src
   exposed-modules:     DB, FSWatcher, Server, Logger, FileEntry, Discover.DHT,
-                       Discover.Broadcast, HashUtils
+                       Discover.Broadcast, HashUtils, RollingFile
   ghc-options:         -O2
   cc-options: -O2
   c-sources: cbits/dht_ffi.c
