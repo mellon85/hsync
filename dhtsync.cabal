@@ -10,28 +10,30 @@ maintainer:          mellon85@gmail.com
 copyright:           2016 Dario Meloni
 category:            Web
 build-type:          Simple
-extra-source-files:  cbits/dht_ffi.c cbits/dht_ffi.h cbits/dht/dht.h cbits/dht/dht.c
+extra-source-files:  cbits/dht_ffi.c cbits/dht_ffi.h cbits/dht/dht.h
+                     cbits/dht/dht.c
 cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
   exposed-modules:     DB, FSWatcher, Server, Logger, FileEntry, Discover.DHT,
-                       Discover.Broadcast, HashUtils, RollingFile
+                       Discover.Broadcast, HashUtils
   ghc-options:         -O2
   cc-options: -O2
   c-sources: cbits/dht_ffi.c
   build-depends:       base >= 4.7 && < 5, memory, random, network,
                        stm, mtl, time, text, directory >=1.2, bytestring,
-                       conduit, conduit-combinators, conduit-extra, HDBC, HDBC-sqlite3,
-                       containers, hslogger, resourcet, transformers,
-                       aeson, async, exceptions, vector, iproute, cryptonite, array
+                       conduit, HDBC, HDBC-sqlite3, containers, hslogger,
+                       transformers, aeson, async, exceptions, vector, iproute,
+                       cryptonite, array, resourcet
   default-language:    Haskell2010
 
 executable dht-sync
   hs-source-dirs:      app
   main-is:             Main.hs
   ghc-options:         -threaded -rtsopts -with-rtsopts=-N -O2
-  build-depends:       base, dhtsync, hslogger, aeson, text, bytestring, directory, yaml
+  build-depends:       base, dhtsync, hslogger, aeson, text, bytestring,
+                       directory, yaml
   default-language:    Haskell2010
   other-modules:     Configuration
 
@@ -48,4 +50,3 @@ test-suite test
 source-repository head
   type:     git
   location: https://github.com/mellon85/dhtsync
-
