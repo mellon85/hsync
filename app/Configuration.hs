@@ -22,7 +22,6 @@ import Control.Monad
 import Control.Exception
 import Control.Applicative
 import Data.ByteString as BS
-import Data.ByteString.Lazy as BSL
 import Data.ByteString.Char8 as BSC
 
 import qualified Data.Text.IO as TO
@@ -77,20 +76,23 @@ instance ToJSON DHTConf where
 ---- Broadcast configuration
 
 data BroadcastConf = BroadcastConf {
-        broadcastEnabled :: Bool
+        broadcastEnabledV4 :: Bool
+      , broadcastEnabledV6 :: Bool
       , broadcastPort :: Word16
       , broadcastInterval :: Word32
     } deriving(Show)
 
 instance FromJSON BroadcastConf where
     parseJSON = withObject "broadcast" $ \v -> BroadcastConf
-        <$> v .:? "enabled"  .!= True
-        <*> v .:? "port"     .!= 4546
-        <*> v .:? "interval" .!= 60
+        <$> v .:? "enabled_v4"  .!= True
+        <*> v .:? "enabled_v6"  .!= True
+        <*> v .:? "port"        .!= 4546
+        <*> v .:? "interval"    .!= 60
 
 instance ToJSON BroadcastConf where
-    toJSON (BroadcastConf _enabled _port _interval) = object [
-        "enabled"  .= _enabled
+    toJSON (BroadcastConf _enabled_v4 _enabled_v6 _port _interval) = object [
+        "enabled_v4"  .= _enabled_v4
+      , "enabled_v6"  .= _enabled_v6
       , "port"     .= _port
       , "interval" .= _interval
         ]

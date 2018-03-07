@@ -58,24 +58,29 @@ warning = warningM logModule
 -- | Starts a Broadcast discovery thread
 start ::
     PortNumber    -- ^ Port number to use
+ -> Bool          -- ^ Enable IPv4
+ -> Bool          -- ^ Enable IPv6
  -> Int           -- ^ Refresh interval in seconds
  -> IO Broadcast  -- ^ Broadcast control block
-start p n = do
+start p v4 v6 n = do
     info $ "Starting Broadcast system on port " ++ (show p)
     peers <- newTChanIO
 
     -- try to start IPv6 and then IPv4
     -- always report the situation anyway
     debug $ "Start IPv6 Broadcast"
-    s6 <- bracketOnError
+    s6 <- if v6
+          then bracketOnError
             (socket AF_INET6 Datagram defaultProtocol)
             (\s -> do
                 close s
                 info $ "Stop IPv6 Broadcast")
-            (broadcast . BC n peers AF_INET6 "ff02::1" p)
+            (broadcast . BC n peers AF_INET6 "ff02::100" p)
+          else return Nothing
 
     debug $ "Start IPv4 Broadcast"
-    s4 <- bracketOnError
+    s4 <- if v4
+          then bracketOnError
             (socket AF_INET Datagram defaultProtocol)
             (\s -> do
                 close s
@@ -83,6 +88,7 @@ start p n = do
             (\s -> do
                 when (isSupportedSocketOption Broadcast) $ setSocketOption s Broadcast 1
                 broadcast $ BC n peers AF_INET "255.255.255.255" p s)
+          else return Nothing
 
     return $ B s4 s6 peers
 
@@ -116,7 +122,7 @@ broadcast bc@(BC r chan f addr p s) = broadcast' `catch` logError
                 warning $ ("Failed to start "++) . shows bc $ []
                 return Nothing
             else let address = head addr in do
-                debug $ "Starting with address " ++ (show address)
+                debug $ "Bind to address " ++ (show address)
                 bind s $ addrAddress address
                 a <- async $ broadcastLoop s r (addrAddress address) chan
                 return $ Just (s, a)

@@ -61,8 +61,11 @@ main = do
     infoM logModule $ "Closing"
 
 startBroadcast :: C.BroadcastConf -> IO (Maybe B.Broadcast)
-startBroadcast conf | broadcastEnabled conf = do
-                        b <- B.start (fromIntegral $ broadcastPort conf) (fromIntegral $ broadcastInterval conf)
+startBroadcast conf | broadcastEnabledV4 conf ||  broadcastEnabledV6 conf = do
+                        b <- B.start (fromIntegral $ broadcastPort conf)
+                                     (broadcastEnabledV4 conf)
+                                     (broadcastEnabledV6 conf)
+                                     (fromIntegral $ broadcastInterval conf)
                         return . Just $ b
                     | otherwise = return Nothing
 
