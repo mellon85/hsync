@@ -70,11 +70,9 @@ iterateDirectory' x = do
             let final_path = showString x . showString "/" $ path
             isDir <- liftIO $ doesDirectoryExist final_path
             isFile <- liftIO $ doesFileExist final_path
-            test final_path isFile isDir
-
-        test dest isFile isDir | isFile == isDir = return () -- doesn't exist
-                               | isFile          = send dest False
-                               | isDir           = iterateDirectory' dest
+            if isFile == isDir then return () -- doesn't exist
+            else if isFile then send final_path False
+            else iterateDirectory' final_path
 
         -- Send will read the modification date. If not possible will mark
         -- the Entry as error
@@ -120,40 +118,42 @@ hashblocks handle = runConduit $ chunksumC handle .| sinkSeq
 
 -- Finds element that are different between the two sources
 -- Usually one source is the local database, the other one is the current status
-findDiffs :: (Monad m) => Source m Entry -> Source m Entry -> Source m (Comparison Entry)
+findDiffs :: (Monad m) => ConduitM () Entry m () -> ConduitM () Entry m () -> ConduitM () (Comparison Entry) m ()
 findDiffs s1 s2 = do
     -- get first elements from both
     v1 <- lift $ newResumableSource s1 $$++ await
     v2 <- lift $ newResumableSource s2 $$++ await
     recurse v1 v2
     where
+        get src = lift $ src $$++ await
 
         -- do all the cases and tail recursively yield the differences
         recurse (_, Nothing) (_, Nothing) = return ()
         recurse v1@(_, Nothing) (rs2, Just b) = do
             yield (NewRight b)
-            v2 <- lift $ rs2 $$++ await
+            v2 <- get rs2
             recurse v1 v2
 
         recurse (rs1, Just a) v2@(_, Nothing) = do
             yield (NewLeft a)
-            v1 <- lift $ rs1 $$++ await
+            v1 <- get rs1
             recurse v1 v2
 
         recurse v1@(rs1, Just a) v2@(rs2, Just b)
             | entryPath a == entryPath b = do
                 when (a /= b) (yield $ Collision a b)
-                v1 <- lift $ rs1 $$++ await
-                v2 <- lift $ rs2 $$++ await
+                v1 <- get rs1
+                v2 <- get rs2
                 recurse v1 v2
             | entryPath a < entryPath b = do
                 yield $ NewLeft a
-                v1 <- lift $ rs1 $$++ await
+                v1 <- get rs1
                 recurse v1 v2
             | entryPath a > entryPath b = do
                 yield $ NewRight b
-                v2 <- lift $ rs2 $$++ await
+                v2 <- get rs2
                 recurse v1 v2
+
 
 testFS = do
     c <- DB.connect "test.db"
