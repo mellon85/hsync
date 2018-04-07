@@ -48,8 +48,8 @@ data DBConnection = DBC {
 connect :: FilePath -> IO DBConnection
 connect x = do
     c <- HSD.connectSqlite3 x
+    HS.quickQuery c "PRAGMA journal_mode=WAL;" []
     HS.quickQuery c "PRAGMA encoding = \"UTF-8\";" []
-    --HS.quickQuery c "PRAGMA journal_mode=WAL;" []
     HS.runRaw c setupSQL
     HS.commit c
     prep_stmt <- mapM (\(a, s) -> do
