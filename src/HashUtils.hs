@@ -3,8 +3,9 @@ module HashUtils (
         chunksumC, AdlerHash, ChunkedSum(..), sinkSeq, max_size, min_size
     ) where
 
-import Data.Conduit
-import Data.Void
+import qualified Streaming as S
+import qualified Streaming.Prelude as SP
+import Streaming.Prelude (yield)
 import Data.Monoid (mempty)
 import Control.Monad.IO.Class
 import qualified Data.ByteString.Lazy as BL
@@ -72,10 +73,7 @@ instance Storable ChunkedSum where
         poke (castPtr ptr) hash
         pokeElemOff (castPtr ptr) (sizeOf hash) len
 
-
-type ProduceChunkedSum m = ConduitM () ChunkedSum m ()
-
-chunksumC :: (MonadIO m) => Handle -> ProduceChunkedSum m
+chunksumC :: (MonadIO m) => Handle -> S.Stream (S.Of ChunkedSum) m ()
 chunksumC handle = do
     lazy_data <- liftIO $ BL.hGetContents handle
     tailSum lazy_data adlerInit adlerInit 0 lazy_data
@@ -83,7 +81,7 @@ chunksumC handle = do
     tailSum :: (Monad m) => BL.ByteString
                          -> Adler32 -> Adler32
                          -> Word32 -> BL.ByteString
-                         -> ProduceChunkedSum m
+                         -> S.Stream (S.Of ChunkedSum) m ()
     tailSum bs !current !total !count !out =
         case BL.uncons bs of
             Nothing          -> do
@@ -116,11 +114,12 @@ chunksumC handle = do
 
 -- reads all checksums and returns a tuple with the total checksum in the first
 -- place and the sequence of checksums as the second
-sinkSeq :: Monad m => ConduitM ChunkedSum Void m (AdlerHash, Seq ChunkedSum)
-sinkSeq = loop mempty
+sinkSeq :: Monad m => S.Stream (S.Of ChunkedSum) m r ->
+                m (AdlerHash, Seq ChunkedSum)
+sinkSeq str = loop str mempty
     where
-        loop !s = do
-            Just v <- await
+        loop str !s = do
+            Right (v, rest) <- SP.next str
             if chunkSize v == 0
             then return $ (hash v, s)
-            else loop (s |> v)
+            else loop str (s |> v)
